@@ -1,0 +1,23 @@
+{
+    "name": "AI Data Assistant",
+    "version": "1.0.0",
+    "summary": "LLM-based data dedupe, normalization and natural language querying",
+    "author": "Tommaso Sollo",
+    "license": "LGPL-3",
+    "website": "https://example.com",
+    "category": "Productivity/AI",
+    "depends": ["base"],
+    "data": [
+        "security/security.xml",
+        "security/ir.model.access.csv",
+        "views/menu.xml",
+        "views/res_config_settings.xml",
+        "views/assistant_views.xml",
+        "wizard/wizard_duplicate_checker.xml",
+        "wizard/wizard_nl_query.xml",
+        "data/cron.xml",
+    ],
+    "assets": {},
+    "installable": True,
+    "application": True,
+}

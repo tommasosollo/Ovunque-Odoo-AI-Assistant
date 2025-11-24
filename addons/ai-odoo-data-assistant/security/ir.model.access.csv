@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_duplicate_checker,access_duplicate_checker,model_ai_duplicate_checker_wizard,base.group_user,1,1,1,1
+access_nl_query_wizard,access_nl_query_wizard,model_ai_nl_query_wizard,base.group_user,1,1,1,1

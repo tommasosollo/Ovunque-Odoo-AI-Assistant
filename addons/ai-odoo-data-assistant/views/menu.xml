@@ -1,0 +1,19 @@
+<odoo>
+    <menuitem id="menu_ai_root" name="AI Data Assistant" sequence="20"/>
+
+    <menuitem id="menu_ai_tools"
+              name="Tools"
+              parent="menu_ai_root"/>
+
+    <record id="action_nl_query" model="ir.actions.act_window">
+        <field name="name">Ask in Natural Language</field>
+        <field name="res_model">ai.nl.query.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_ai_nl_query"
+              parent="menu_ai_tools"
+              action="action_nl_query"
+              name="Query Assistant"/>
+</odoo>

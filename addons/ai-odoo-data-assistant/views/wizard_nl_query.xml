@@ -1,0 +1,17 @@
+<odoo>
+    <record id="view_nl_query_wizard" model="ir.ui.view">
+        <field name="name">ai.nl.query.wizard.form</field>
+        <field name="model">ai.nl.query.wizard</field>
+        <field name="arch" type="xml">
+            <form string="AI Query Assistant">
+                <group>
+                    <field name="user_query"/>
+                </group>
+                <footer>
+                    <button name="action_execute" type="object" string="Run Query" class="btn-primary"/>
+                    <button string="Cancel" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>
