@@ -8,14 +8,13 @@
     "category": "Productivity/AI",
     "depends": ["base"],
     "data": [
+        "security/ir.model.access.csv",
         "views/res_config_settings.xml",
-        "views/assistant_views.xml",
+        "views/ai_assistant_model_selection_views.xml",
         "wizard/wizard_duplicate_checker.xml",
-        "wizard/wizard_nl_query.xml",
         "data/cron.xml",
         "views/menu.xml",
-        "security/security.xml",
-        "security/ir.model.access.csv",
+        "security/security.xml"
     ],
     "assets": {},
     "installable": True,

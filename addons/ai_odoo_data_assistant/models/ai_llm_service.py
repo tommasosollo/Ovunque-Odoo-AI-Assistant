@@ -25,20 +25,21 @@ class AIService(models.AbstractModel):
 
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=30)
-            print("Raw LLM response:", r.text)
-
             r.raise_for_status()
             data = r.json()
 
-            # NUOVO FORMATO /v1/responses
             output = data.get("output", [])
             if not output:
                 raise ValueError("LLM ha restituito output vuoto")
 
-            # ritorna direttamente la LISTA completa
-            return output
+            # estrai solo il testo
+            for item in output:
+                if isinstance(item, dict) and "content" in item:
+                    for c in item["content"]:
+                        if c.get("type") == "text":
+                            return c["text"]
 
+            raise ValueError("Formato risposta LLM non valido")
 
         except requests.exceptions.RequestException as e:
-            # errore dettagliato
-            raise ValueError(f"Errore nella chiamata all'LLM: {r.text}") from e
+            raise ValueError(f"Errore nella chiamata all'LLM: {str(e)}") from e

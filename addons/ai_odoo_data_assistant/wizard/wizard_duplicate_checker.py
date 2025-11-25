@@ -4,9 +4,10 @@ class DuplicateCheckerWizard(models.TransientModel):
     _name = "ai.duplicate.checker.wizard"
     _description = "Popup for duplicate suggestions"
 
-    original_record_id = fields.Many2one("ir.model")
     suggestions = fields.Text("Suggestions", readonly=True)
+    duplicates = fields.Text("Possible Duplicates", readonly=True)
+    normalized_values = fields.Text("Normalized Values", readonly=True)
 
     def action_apply(self):
-        # Applica suggerimenti (implementazione base)
+        # TODO: implementare merge/replace
         return True

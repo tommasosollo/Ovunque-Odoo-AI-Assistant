@@ -1,11 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<!-- ai_odoo_data_assistant/security/security.xml -->
 <odoo>
-    <data noupdate="1">
-
-        <!-- Gruppo per usare l’assistente AI -->
-        <record id="group_ai_data_assistant_user" model="res.groups">
-            <field name="name">AI Data Assistant User</field>
-        </record>
-
-    </data>
+    
 </odoo>

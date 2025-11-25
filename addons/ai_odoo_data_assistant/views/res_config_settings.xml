@@ -7,14 +7,30 @@
             <xpath expr="//form" position="inside">
                 <app string="AI Assistant" name="ai_assistant_settings" icon="/ai_odoo_data_assistant/static/description/ai.png">
                     <block title="Duplicate Checker" name="ai_duplicate_checker_block">
-                        <setting id="ai_duplicate_checker" string="Enable AI Duplicate Checker">
-                            <field name="module_ai_duplicate_checker"/>
+                        <setting id="ai_duplicate_checker_enabled" string="Enable AI Duplicate Checker">
+                            <field name="ai_duplicate_checker_enabled"/>
                         </setting>
                     </block>
-                    <block title="NL Query Wizard" name="ai_nl_query_block">
-                        <setting id="ai_nl_query" string="Enable AI NL Query">
-                            <field name="module_ai_nl_query"/>
+
+                    <block title="LLM Configuration" name="ai_llm_config_block">
+                        <setting id="ai_api_key" string="API Key">
+                            <field name="ai_api_key"/>
                         </setting>
+                        <setting id="ai_model_name" string="Model Name">
+                            <field name="ai_model_name"/>
+                        </setting>
+                        <setting id="ai_redundancy_level" string="Redundancy Analysis Level">
+                            <field name="ai_redundancy_level"/>
+                        </setting>
+
+                        <group>
+                        <field name="ai_models_to_check_ids"
+                            widget="one2many_list"
+                            context="{'default_company_id': user.company_id.id}"
+                            domain="[('company_id', '=', user.company_id.id)]"/>
+                        </group>
+
+
                     </block>
                 </app>
             </xpath>

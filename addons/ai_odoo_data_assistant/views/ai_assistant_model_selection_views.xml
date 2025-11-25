@@ -1,0 +1,28 @@
+<odoo>
+  <record id="view_ai_assistant_model_selection_list" model="ir.ui.view">
+    <field name="name">ai.assistant.model.selection.list</field>
+    <field name="model">ai.assistant.model.selection</field>
+    <field name="arch" type="xml">
+        <list string="Models to check">
+        <field name="model_id"/>
+        <field name="active"/>
+        <field name="notes"/>
+        </list>
+    </field>
+    </record>
+
+    <record id="view_ai_assistant_model_selection_form" model="ir.ui.view">
+    <field name="name">ai.assistant.model.selection.form</field>
+    <field name="model">ai.assistant.model.selection</field>
+    <field name="arch" type="xml">
+        <form string="Model selection">
+            <group>
+                <field name="company_id" invisible="1"/>
+                <field name="model_id"/>
+                <field name="active"/>
+                <field name="notes"/>
+            </group>
+        </form>
+    </field>
+    </record>
+</odoo>
