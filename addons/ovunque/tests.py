@@ -85,7 +85,7 @@ class TestOvunqueUtils(TransactionCase):
     
     def test_validate_domain(self):
         """Test domain validation"""
-        from ovunque_ai_assistant import utils
+        from ovunque import utils
         
         valid_domain = [('name', 'ilike', 'test')]
         self.assertTrue(utils.validate_domain(valid_domain))
@@ -98,7 +98,7 @@ class TestOvunqueUtils(TransactionCase):
     
     def test_common_search_patterns(self):
         """Test common search patterns"""
-        from ovunque_ai_assistant import utils
+        from ovunque import utils
         
         patterns = utils.common_search_patterns()
         self.assertIn('account.move', patterns)

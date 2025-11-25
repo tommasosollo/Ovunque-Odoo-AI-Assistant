@@ -1,33 +1,114 @@
 odoo.define('ovunque.search_bar', function (require) {
     'use strict';
 
-    const core = require('web.core');
     const rpc = require('web.rpc');
-    const session = require('web.session');
-    const _t = core._t;
 
     const SearchBar = {
+        currentModel: null,
+        observer: null,
+
+        extractModelFromURL: function() {
+            const listView = document.querySelector('.o_list_view');
+            if (listView) {
+                const classes = listView.className.split(' ');
+                for (let cls of classes) {
+                    if (cls.startsWith('o_') && cls !== 'o_list_view' && cls !== 'o_view_controller' && !cls.startsWith('o_list')) {
+                        const model = this.classToModel(cls);
+                        if (model) {
+                            console.log('[Ovunque] Extracted model from class:', cls, '→', model);
+                            return model;
+                        }
+                    }
+                }
+            }
+            
+            const hash = window.location.hash;
+            const match = hash.match(/model=([^&]+)/);
+            if (match) {
+                return decodeURIComponent(match[1]);
+            }
+            
+            const pathMatch = window.location.pathname.match(/\/web\/list\/([^/]+)/);
+            if (pathMatch) {
+                return decodeURIComponent(pathMatch[1]);
+            }
+            
+            return null;
+        },
+
+        classToModel: function(className) {
+            const modelMap = {
+                'o_partner': 'res.partner',
+                'o_sale_order': 'sale.order',
+                'o_purchase_order': 'purchase.order',
+                'o_account_move': 'account.move',
+                'o_account_invoice': 'account.move',
+                'o_product': 'product.product',
+                'o_stock_move': 'stock.move',
+                'o_crm_lead': 'crm.lead',
+                'o_project_task': 'project.task',
+            };
+            
+            for (let [key, value] of Object.entries(modelMap)) {
+                if (className.includes(key)) {
+                    return value;
+                }
+            }
+            
+            return null;
+        },
+
         init: function() {
-            this.currentModel = null;
+            const self = this;
+            console.log('[Ovunque] Initializing search bar');
+            this.startObserver();
             this.setupSearchBar();
+        },
+
+        startObserver: function() {
+            const self = this;
+            const config = { childList: true, subtree: true };
+            
+            this.observer = new MutationObserver(function() {
+                self.setupSearchBar();
+            });
+            
+            const targetNode = document.body;
+            if (targetNode) {
+                this.observer.observe(targetNode, config);
+                console.log('[Ovunque] MutationObserver started');
+            }
         },
 
         setupSearchBar: function() {
             const self = this;
+            const listViewHeader = document.querySelector('.o_list_view');
             
-            document.addEventListener('DOMContentLoaded', function() {
-                // Add search bar to list view header
-                const listViewHeader = document.querySelector('.o_list_view .o_list_header');
-                if (listViewHeader && !document.getElementById('ovunque_search_bar')) {
-                    const searchBar = self.createSearchBar();
-                    listViewHeader.parentElement.insertBefore(searchBar, listViewHeader);
-                }
-            });
+            if (!listViewHeader) {
+                return;
+            }
+            
+            if (document.getElementById('ovunque_search_bar')) {
+                return;
+            }
 
-            document.addEventListener('o_list_view_loaded', function(e) {
-                self.currentModel = e.detail?.model || self.extractModelFromContext();
-                self.attachSearchBarListeners();
-            });
+            this.currentModel = this.extractModelFromURL();
+            console.log('[Ovunque] Current model:', this.currentModel);
+            if (!this.currentModel) {
+                console.log('[Ovunque] No model detected, skipping setup');
+                return;
+            }
+            
+            console.log('[Ovunque] Setting up search bar for model:', this.currentModel);
+
+            const searchBar = this.createSearchBar();
+            const listHeader = listViewHeader.querySelector('.o_list_header');
+            
+            if (listHeader) {
+                listHeader.parentElement.insertBefore(searchBar, listHeader);
+            } else {
+                listViewHeader.insertBefore(searchBar, listViewHeader.firstChild);
+            }
 
             this.attachSearchBarListeners();
         },
@@ -121,7 +202,7 @@ odoo.define('ovunque.search_bar', function (require) {
                 return;
             }
 
-            const model = this.currentModel || this.extractModelFromContext();
+            const model = this.currentModel || this.extractModelFromURL();
             if (!model) {
                 this.showError('Could not determine the current model');
                 return;
@@ -209,24 +290,9 @@ odoo.define('ovunque.search_bar', function (require) {
             
             if (resultDiv) resultDiv.style.display = 'none';
             if (errorDiv) errorDiv.style.display = 'none';
-        },
-
-        extractModelFromContext: function() {
-            // Try to extract model name from current URL or breadcrumb
-            const breadcrumbs = document.querySelectorAll('.breadcrumb-item.active');
-            if (breadcrumbs.length > 0) {
-                return breadcrumbs[breadcrumbs.length - 1].textContent;
-            }
-            
-            // Fallback: try from URL
-            const urlParts = window.location.pathname.split('/');
-            if (urlParts.length > 0) {
-                return urlParts[urlParts.length - 1];
-            }
-            
-            return null;
         }
     };
 
+    SearchBar.init();
     return SearchBar;
 });

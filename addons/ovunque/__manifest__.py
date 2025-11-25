@@ -14,14 +14,6 @@
         'views/search_query_views.xml',
         'views/menu.xml',
     ],
-    'assets': {
-        'web.assets_backend': [
-            'ovunque_ai_assistant/static/src/js/search_bar.js',
-        ],
-        'web.assets_qweb': [
-            'ovunque_ai_assistant/static/src/xml/search_template.xml',
-        ],
-    },
     'external_dependencies': {
         'python': [
             'openai',
