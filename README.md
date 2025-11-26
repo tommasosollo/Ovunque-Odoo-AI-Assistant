@@ -18,7 +18,7 @@ Output: Ricerca automatica con visualizzazione dei risultati
 - **Python**: 3.10+
 - **OpenAI API key**: da https://platform.openai.com/api-keys
 
-### Installazione del Modulo
+### Installazione Standard
 
 ```bash
 # 1. Copia il modulo nella directory addons di Odoo
@@ -30,6 +30,31 @@ pip install -r /path/to/your/odoo/addons/ovunque/requirements.txt
 # 3. Riavvia Odoo
 ./odoo-bin -u all
 ```
+
+### Installazione con Docker
+
+Se stai usando Docker, segui questi step:
+
+1. **Build e avvia i container**:
+```bash
+docker-compose up --build -d
+```
+
+2. **Attendi l'avvio di Odoo** (circa 15 secondi)
+
+3. **Accedi al container ed installa openai**:
+```bash
+docker exec -u odoo odoo-ai-19 pip install --user --break-system-packages 'openai>=1.0.0'
+```
+
+4. **Riavvia il container Odoo**:
+```bash
+docker restart odoo-ai-19
+```
+
+5. **Accedi a Odoo** su http://localhost:8069 e installa il modulo **Ovunque** dal menu Applicazioni
+
+**Nota**: Se ottieni l'errore `Impossibile installare il modulo "ovunque" perché manca una dipendenza esterna: openai`, significa che il pacchetto openai non è ancora riconosciuto. Ripeti il comando di cui al punto 3 e riavvia di nuovo il container.
 
 ### Configurare OpenAI API
 
@@ -92,24 +117,18 @@ ai-odoo-data-assistant/
 ## Esempi di Query
 
 ### Partner/Contatti
-- "Mostrami tutti i clienti della Toscana"
-- "Chi mi deve pagare più di 5000 euro?"
-- "Fornitori che non ho contattato da 1 anno"
+- "Fornitori che ho contattato nell'ultimo anno"
 
 ### Fatture
-- "Fatture non pagate di novembre"
-- "Fatture >1000 euro dello scorso anno"
+- "Fatture da piu di 1000 euro"
 - "Fatture di Rossi del 2024"
 
 ### Prodotti
-- "Prodotti in magazzino sotto 5 pezzi"
-- "Tutti i prodotti della categoria Elettronica"
 - "Articoli con prezzo tra 10 e 100 euro"
 
 ### Ordini
-- "Ordini spediti della scorsa settimana"
-- "Ordini in sospeso di Milano"
-- "Vendite totali di Gennaio"
+- "Ordini della scorsa settimana"
+- "Vendite di novembre 2025"
 
 ## Come Funziona Internamente
 
