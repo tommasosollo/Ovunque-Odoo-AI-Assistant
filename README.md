@@ -11,10 +11,6 @@ Input:  "Fammi vedere tutti i clienti che non hanno ordinato negli ultimi 6 mesi
 Output: Ricerca automatica con visualizzazione dei risultati
 ```
 
-## Quick Start
-
-Leggi [QUICKSTART.md](addons/ovunque/QUICKSTART.md) per installare e configurare in 5 minuti.
-
 ## Configurazione Iniziale
 
 ### Prerequisiti
@@ -245,17 +241,6 @@ Non hai impostato la chiave API.
 - ⚠️ **Non supporta JOIN** tra modelli
 - ⚠️ **Lingua**: Supporta input in italiano/inglese (estendibile ad altre lingue)
 
-## Testing
-
-Il modulo include test unitari in `tests.py`. Per eseguirli:
-
-```bash
-# Da dentro il container Docker
-docker exec odoo-ai-19 python -m pytest addons/ovunque/tests.py -v
-
-# Oppure via Odoo
-./odoo-bin -c config.conf -u ovunque --test-enable
-```
 
 ## Sviluppo
 
@@ -269,7 +254,3 @@ Leggi [DEVELOPMENT.md](addons/ovunque/DEVELOPMENT.md) per:
 ## License
 
 AGPL-3.0
-
-## Support
-
-Per bug, suggerimenti o domande: aprire un issue nel repository.
