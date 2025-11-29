@@ -1,7 +1,9 @@
 import json
 import logging
+import re
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
+from collections import Counter
 
 _logger = logging.getLogger(__name__)
 
@@ -64,6 +66,45 @@ class SearchQuery(models.Model):
         'tasks': ['project.task'],
         'projects': ['project.task'],
     }
+    
+    # Multi-model query patterns with regex and execution logic
+    # These patterns detect when a query needs multiple models to be answered
+    MULTI_MODEL_PATTERNS = {
+        'partners_with_count_invoices': {
+            'pattern': r'(clienti|partner|cliente|customer|fornitore|supplier).*?(?:con|that have|with).*?(\d+)\s*(?:fatture|invoice|document)',
+            'primary_model': 'res.partner',
+            'secondary_model': 'account.move',
+            'operation': 'count_aggregate',
+            'aggregate_field': 'partner_id',
+            'count_comparison': 'greater_than',
+            'link_field': 'partner_id',
+        },
+        'partners_with_orders': {
+            'pattern': r'(clienti|partner|customer|cliente).*?(?:con|with|that have).*?(\d+)\s*(?:ordini|order)',
+            'primary_model': 'res.partner',
+            'secondary_model': 'sale.order',
+            'operation': 'count_aggregate',
+            'aggregate_field': 'partner_id',
+            'count_comparison': 'greater_than',
+            'link_field': 'partner_id',
+        },
+        'products_without_orders': {
+            'pattern': r'(prodotti|product).*?(?:senza|without|mai|never).*?(?:ordini|order)',
+            'primary_model': 'product.template',
+            'secondary_model': 'sale.order',
+            'operation': 'exclusion',
+            'aggregate_field': 'product_id',
+            'link_field': 'product_id',
+        },
+        'suppliers_without_purchases': {
+            'pattern': r'(fornitore|supplier).*?(?:senza|without).*?(?:ordini|order|acquisti)',
+            'primary_model': 'res.partner',
+            'secondary_model': 'purchase.order',
+            'operation': 'exclusion',
+            'aggregate_field': 'partner_id',
+            'link_field': 'partner_id',
+        },
+    }
 
     # The natural language query text entered by the user (e.g., "unpaid invoices over 1000")
     name = fields.Char('Query Text', required=True)
@@ -110,6 +151,9 @@ class SearchQuery(models.Model):
     
     # Reference to the user who created this query
     created_by_user = fields.Many2one('res.users', 'Created By', default=lambda self: self.env.user)
+    
+    # Flag indicating if this is a multi-model query (searches across multiple models)
+    is_multi_model = fields.Boolean('Is Multi-Model Query', default=False, readonly=True)
 
     def action_execute_search(self):
         """
@@ -117,68 +161,322 @@ class SearchQuery(models.Model):
         
         Flow:
         1. Delete any previous results for this query
-        2. Validate that a category was selected
-        3. Select the appropriate Odoo model based on category
-        4. Parse natural language to Odoo domain using LLM
-        5. Execute the domain search
-        6. Store results in search.result records
-        7. Update status (success/error) and error messages
+        2. Check if this is a multi-model query (e.g., "clients with 10+ invoices")
+        3. If multi-model: execute complex cross-model logic
+           Else: proceed with standard single-model search
+        4. Validate category/model selection
+        5. Parse natural language to Odoo domain using LLM
+        6. Execute the search
+        7. Store results in search.result records
+        8. Update status (success/error) and error messages
         """
         for record in self:
             try:
                 record.result_ids.unlink()
                 
-                if not record.category:
-                    raise UserError(_('Please select a category (Clienti, Prodotti, etc.) before searching.'))
+                # Check if this is a multi-model query
+                multi_model_pattern = record._detect_multi_model_query()
                 
-                available_models = self.CATEGORY_MODELS.get(record.category, ['res.partner'])
-                
-                valid_model = None
-                for model in available_models:
-                    try:
-                        self.env[model]
-                        valid_model = model
-                        break
-                    except KeyError:
-                        _logger.warning(f"[CHECK] Model {model} not installed")
-                        continue
-                
-                if not valid_model:
-                    category_label = dict(record._fields['category'].selection).get(record.category, record.category)
-                    error_msg = _(
-                        'The required module for "%s" is not installed.\n\n'
-                        'To enable this feature:\n'
-                        '1. Go to Apps in Odoo\n'
-                        '2. Search for the module (e.g., "CRM", "Sales", "Inventory")\n'
-                        '3. Click "Install"\n'
-                        '4. Come back and try again\n\n'
-                        'Technical: Missing modules: %s'
-                    ) % (category_label, ', '.join(available_models))
-                    raise UserError(error_msg)
-                
-                record.model_name = valid_model
-                _logger.warning(f"[SELECT] Category {record.category} → Model {valid_model}")
-                
-                domain = record._parse_natural_language()
-                record.model_domain = str(domain)
-                record.status = 'success'
-                
-                Model = self.env[record.model_name]
-                results = Model.search(domain)
-                record.results_count = len(results)
-                
-                result_data = []
-                for res in results:
-                    result_data.append((0, 0, {
-                        'record_id': res.id,
-                        'record_name': res.display_name,
-                        'model': record.model_name,
-                    }))
-                record.result_ids = result_data
+                if multi_model_pattern:
+                    _logger.warning(f"[MULTI-MODEL] Detected pattern: {multi_model_pattern['pattern_key']}")
+                    record.is_multi_model = True
+                    record._execute_multi_model_search(multi_model_pattern)
+                else:
+                    # Standard single-model search
+                    record.is_multi_model = False
+                    record._execute_single_model_search()
+                    
             except Exception as e:
                 record.status = 'error'
                 record.error_message = str(e)
                 _logger.error(f"Error executing search: {e}")
+    
+    def _execute_single_model_search(self):
+        """Execute a standard single-model search (existing logic)."""
+        if not self.category:
+            raise UserError(_('Please select a category (Clienti, Prodotti, etc.) before searching.'))
+        
+        available_models = self.CATEGORY_MODELS.get(self.category, ['res.partner'])
+        
+        valid_model = None
+        for model in available_models:
+            try:
+                self.env[model]
+                valid_model = model
+                break
+            except KeyError:
+                _logger.warning(f"[CHECK] Model {model} not installed")
+                continue
+        
+        if not valid_model:
+            category_label = dict(self._fields['category'].selection).get(self.category, self.category)
+            error_msg = _(
+                'The required module for "%s" is not installed.\n\n'
+                'To enable this feature:\n'
+                '1. Go to Apps in Odoo\n'
+                '2. Search for the module (e.g., "CRM", "Sales", "Inventory")\n'
+                '3. Click "Install"\n'
+                '4. Come back and try again\n\n'
+                'Technical: Missing modules: %s'
+            ) % (category_label, ', '.join(available_models))
+            raise UserError(error_msg)
+        
+        self.model_name = valid_model
+        _logger.warning(f"[SELECT] Category {self.category} → Model {valid_model}")
+        
+        domain = self._parse_natural_language()
+        self.model_domain = str(domain)
+        self.status = 'success'
+        
+        Model = self.env[self.model_name]
+        results = Model.search(domain)
+        self.results_count = len(results)
+        
+        result_data = []
+        for res in results:
+            result_data.append((0, 0, {
+                'record_id': res.id,
+                'record_name': res.display_name,
+                'model': self.model_name,
+            }))
+        self.result_ids = result_data
+
+    def _detect_multi_model_query(self):
+        """
+        Detect if the query is a multi-model query that needs cross-model logic.
+        
+        Examples of multi-model queries:
+        - "Clienti con più di 10 fatture" → Need to count invoices per customer
+        - "Prodotti mai ordinati" → Need to check against orders table
+        
+        Returns:
+            dict: Pattern info if multi-model query detected, None otherwise
+                  Pattern includes: pattern_key, primary_model, secondary_model, operation, etc.
+        """
+        query_lower = self.name.lower()
+        _logger.warning(f"[MULTI-MODEL-DETECT] Checking query: '{self.name}'")
+        _logger.warning(f"[MULTI-MODEL-DETECT] Lowercase: '{query_lower}'")
+        
+        for pattern_key, pattern_config in self.MULTI_MODEL_PATTERNS.items():
+            regex_pattern = pattern_config['pattern']
+            _logger.warning(f"[MULTI-MODEL-DETECT] Testing pattern '{pattern_key}': {regex_pattern}")
+            
+            if re.search(regex_pattern, query_lower, re.IGNORECASE):
+                pattern_config['pattern_key'] = pattern_key
+                
+                # Extract the count value if present
+                match = re.search(r'(\d+)', query_lower)
+                if match:
+                    pattern_config['count_value'] = int(match.group(1))
+                else:
+                    pattern_config['count_value'] = 1
+                
+                if 'count_comparison' in pattern_config:
+                    has_piu = 'più di' in query_lower or 'more than' in query_lower
+                    has_almeno = 'almeno' in query_lower or 'at least' in query_lower
+                    has_con = re.search(r'con\s+\d+', query_lower)
+                    
+                    if has_piu:
+                        pattern_config['count_comparison'] = 'greater_than'
+                    elif has_almeno or (has_con and not has_piu):
+                        pattern_config['count_comparison'] = 'greater_equal'
+                    
+                    _logger.warning(f"[MULTI-MODEL-DETECT] Adjusted comparison to: {pattern_config['count_comparison']}")
+                
+                _logger.warning(f"[MULTI-MODEL-DETECT] ✓ Matched pattern '{pattern_key}' with count={pattern_config.get('count_value')}")
+                _logger.warning(f"[MULTI-MODEL-DETECT] Primary: {pattern_config['primary_model']}, Secondary: {pattern_config['secondary_model']}")
+                return pattern_config
+        
+        _logger.warning(f"[MULTI-MODEL-DETECT] No pattern matched")
+        return None
+    
+    def _execute_multi_model_search(self, pattern_config):
+        """
+        Execute a multi-model search using the detected pattern.
+        
+        Logic:
+        1. Determine primary model (what we want to return)
+        2. Query secondary model with any filters
+        3. Aggregate/filter based on the operation
+        4. Return results from primary model
+        
+        Args:
+            pattern_config (dict): Pattern configuration from MULTI_MODEL_PATTERNS
+        """
+        primary_model_name = pattern_config['primary_model']
+        secondary_model_name = pattern_config['secondary_model']
+        operation = pattern_config['operation']
+        
+        # Set the model names for tracking
+        self.model_name = primary_model_name
+        
+        try:
+            PrimaryModel = self.env[primary_model_name]
+            SecondaryModel = self.env[secondary_model_name]
+        except KeyError as e:
+            raise UserError(_('Required model not installed: %s') % str(e))
+        
+        _logger.warning(f"[MULTI-MODEL] Executing {operation} on {primary_model_name} via {secondary_model_name}")
+        
+        if operation == 'count_aggregate':
+            self._execute_count_aggregate(
+                primary_model_name, secondary_model_name, 
+                pattern_config, PrimaryModel, SecondaryModel
+            )
+        elif operation == 'exclusion':
+            self._execute_exclusion(
+                primary_model_name, secondary_model_name,
+                pattern_config, PrimaryModel, SecondaryModel
+            )
+        else:
+            raise UserError(_('Unknown multi-model operation: %s') % operation)
+    
+    def _execute_count_aggregate(self, primary_model_name, secondary_model_name, 
+                                 pattern_config, PrimaryModel, SecondaryModel):
+        """
+        Execute count aggregation: find primary model records with N+ records in secondary model.
+        
+        Example: "Clients with 10+ invoices"
+        1. Search all secondary model records
+        2. Group by primary model reference field
+        3. Count per group
+        4. Filter groups with count >= threshold
+        5. Return primary model records
+        """
+        secondary_model = pattern_config['secondary_model']
+        aggregate_field = pattern_config['aggregate_field']
+        link_field = pattern_config['link_field']
+        count_value = pattern_config.get('count_value', 1)
+        
+        _logger.warning(f"[MULTI-MODEL-AGG] Counting {secondary_model} grouped by {aggregate_field}, threshold={count_value}")
+        _logger.warning(f"[MULTI-MODEL-AGG] Using link_field='{link_field}' from pattern config")
+        
+        # Search all records in secondary model
+        SecondaryModel = self.env[secondary_model]
+        secondary_records = SecondaryModel.search([])
+        _logger.warning(f"[MULTI-MODEL-AGG] Found {len(secondary_records)} records in {secondary_model}")
+        
+        # Count records per primary key
+        if not secondary_records:
+            _logger.warning(f"[MULTI-MODEL-AGG] No records found in {secondary_model}")
+            self.results_count = 0
+            self.result_ids = []
+            self.model_domain = "[]  # Multi-model: No records in secondary model"
+            self.status = 'success'
+            return
+        
+        # Group by the link field and count
+        counts = Counter()
+        processed_count = 0
+        empty_link_count = 0
+        error_count = 0
+        
+        for record in secondary_records:
+            try:
+                link_value = record[link_field]
+                if link_value:
+                    # For Many2one fields, get the ID
+                    link_id = link_value.id if hasattr(link_value, 'id') else link_value
+                    counts[link_id] += 1
+                    processed_count += 1
+                else:
+                    empty_link_count += 1
+            except Exception as e:
+                _logger.warning(f"[MULTI-MODEL-AGG] Error accessing {link_field} on record {record.id}: {str(e)}")
+                error_count += 1
+        
+        _logger.warning(f"[MULTI-MODEL-AGG] Processed: {processed_count}, Empty links: {empty_link_count}, Errors: {error_count}")
+        _logger.warning(f"[MULTI-MODEL-AGG] Counts dict: {dict(counts)}")
+        
+        count_comparison = pattern_config.get('count_comparison', 'greater_than')
+        _logger.warning(f"[MULTI-MODEL-AGG] Using comparison: {count_comparison}")
+        
+        matching_ids = []
+        if count_comparison == 'greater_than':
+            matching_ids = [pk for pk, count in counts.items() if count > count_value]
+        elif count_comparison == 'greater_equal':
+            matching_ids = [pk for pk, count in counts.items() if count >= count_value]
+        elif count_comparison == 'equal':
+            matching_ids = [pk for pk, count in counts.items() if count == count_value]
+        
+        _logger.warning(f"[MULTI-MODEL-AGG] Filtering {len(counts)} partners by threshold {count_comparison} {count_value}: {matching_ids}")
+        _logger.warning(f"[MULTI-MODEL-AGG] Found {len(matching_ids)} {primary_model_name}")
+        
+        # Search primary model records with matching IDs
+        if matching_ids:
+            domain = [('id', 'in', matching_ids)]
+            results = PrimaryModel.search(domain)
+        else:
+            results = PrimaryModel.search([('id', '=', False)])  # Empty result
+        
+        self.results_count = len(results)
+        
+        # Store results
+        result_data = []
+        for res in results:
+            result_data.append((0, 0, {
+                'record_id': res.id,
+                'record_name': res.display_name,
+                'model': primary_model_name,
+            }))
+        self.result_ids = result_data
+        
+        # Store the domain for reference (it's a Python domain, not LLM generated)
+        self.model_domain = f"[('id', 'in', {matching_ids})]  # Multi-model aggregation"
+        self.status = 'success'
+    
+    def _execute_exclusion(self, primary_model_name, secondary_model_name,
+                          pattern_config, PrimaryModel, SecondaryModel):
+        """
+        Execute exclusion: find primary model records NOT in secondary model.
+        
+        Example: "Products never ordered"
+        1. Search all secondary model records
+        2. Extract unique primary model references
+        3. Return primary model records NOT in that list
+        """
+        aggregate_field = pattern_config['aggregate_field']
+        
+        _logger.warning(f"[MULTI-MODEL-EXC] Finding {primary_model_name} NOT in {secondary_model_name}")
+        
+        # Find all primary model IDs that appear in secondary model
+        SecondaryModel = self.env[secondary_model_name]
+        secondary_records = SecondaryModel.search([])
+        
+        referenced_ids = set()
+        for record in secondary_records:
+            try:
+                link_value = record[aggregate_field]
+                if link_value:
+                    link_id = link_value.id if hasattr(link_value, 'id') else link_value
+                    referenced_ids.add(link_id)
+            except:
+                pass
+        
+        _logger.warning(f"[MULTI-MODEL-EXC] Found {len(referenced_ids)} referenced {primary_model_name} IDs")
+        
+        # Search primary model NOT in referenced IDs
+        if referenced_ids:
+            domain = [('id', 'not in', list(referenced_ids))]
+        else:
+            # If nothing is referenced, return all active records
+            domain = [('active', '=', True)]
+        
+        results = PrimaryModel.search(domain)
+        self.results_count = len(results)
+        
+        # Store results
+        result_data = []
+        for res in results:
+            result_data.append((0, 0, {
+                'record_id': res.id,
+                'record_name': res.display_name,
+                'model': primary_model_name,
+            }))
+        self.result_ids = result_data
+        
+        self.model_domain = f"{domain}  # Multi-model exclusion"
+        self.status = 'success'
 
     def _parse_natural_language(self):
         """

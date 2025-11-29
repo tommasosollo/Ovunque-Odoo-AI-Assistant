@@ -1,8 +1,8 @@
 {
     'name': 'Ovunque - Natural Language Search for Odoo',
-    'version': '19.0.1.0.0',
+    'version': '19.0.2.0.0',
     'category': 'Tools',
-    'summary': 'Search your Odoo data using natural language with AI',
+    'summary': 'Search your Odoo data using natural language with AI - Now with multi-model queries!',
     'author': 'Your Company',
     'license': 'AGPL-3',
     'depends': [

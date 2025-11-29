@@ -113,6 +113,17 @@ OPENAI_API_KEY=sk-proj-abc123...
 
 ### Query Examples
 
+#### 🆕 Multi-Model Queries (Cross-Model Searches)
+
+The system now supports **complex queries that span multiple models**:
+
+- "**Clienti con più di 10 fatture**" → Clients with 10+ invoices (aggregation)
+- "**Fornitori che non hanno fornito da 6 mesi**" → Inactive suppliers (temporal)
+- "**Prodotti mai ordinati**" → Products with zero orders (exclusion)
+- "**Clienti con ordini sopra 5000 euro**" → Clients with large orders
+
+How it works: The system detects multi-model patterns, queries both tables, and correlates the results.
+
 #### Customers/Contacts (res.partner)
 - "Clienti attivi" → Active customers
 - "Fornitori da Milano" → Suppliers from Milan
@@ -145,47 +156,148 @@ OPENAI_API_KEY=sk-proj-abc123...
 ┌──────────────────────────────────────────────────────────────────┐
 │ 1. USER INPUT                                                     │
 │    "Fatture non pagate di gennaio 2025"                          │
+│    OR: "Clienti con più di 10 fatture" (multi-model)            │
 └──────────────┬───────────────────────────────────────────────────┘
                │
 ┌──────────────▼───────────────────────────────────────────────────┐
-│ 2. CATEGORY SELECTION                                            │
-│    Category: "invoices" → Model: account.move                   │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 3. BUILD INTELLIGENT PROMPT                                      │
-│    • Model description                                           │
-│    • All available stored fields                                 │
-│    • Query examples for this model                               │
-│    • Detailed rules for domain generation                        │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 4. SEND TO GPT-4 API                                            │
-│    ⏱ ~2-3 seconds average response time                         │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 5. PARSE & VALIDATE RESPONSE                                     │
-│    • Extract domain from markdown                                │
-│    • Parse Python list syntax                                    │
-│    • Auto-fix price field confusion                              │
-│    • Validate all fields exist                                   │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 6. EXECUTE SEARCH                                                │
-│    Model.search([('state', '!=', 'posted'),                     │
-│                  ('invoice_date', '>=', '2025-01-01'),          │
-│                  ('invoice_date', '<', '2025-02-01')])          │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 7. DISPLAY RESULTS                                               │
-│    INV/2025/001, INV/2025/003, INV/2025/005                    │
-│    (3 results found)                                             │
-└──────────────────────────────────────────────────────────────────┘
+│ 2. DETECT QUERY TYPE                                             │
+│    Is this a multi-model query?                                  │
+│    Check regex patterns for cross-model searches                 │
+└──────────────┬─────────────────────┬──────────────────────────────┘
+               │                     │
+         ┌─────▼─────┐        ┌──────▼──────┐
+         │   NO      │        │     YES     │
+         │ (Standard)│        │ (Multi-M)   │
+         └─────┬─────┘        └──────┬──────┘
+               │                     │
+     ┌─────────▼───────────┐   ┌─────▼───────────────────┐
+     │ 3a. CATEGORY SELECT │   │ 3b. DETECT PATTERN      │
+     │ invoices→account.m. │   │ partners_with_count_... │
+     └─────────┬───────────┘   └─────┬───────────────────┘
+               │                     │
+     ┌─────────▼──────────────────┐  │
+     │ 4a. BUILD PROMPT (GPT)     │  │
+     │ • Fields, examples, rules  │  │
+     └─────────┬──────────────────┘  │
+               │                     │
+     ┌─────────▼──────────────────┐  │
+     │ 5a. SEND TO GPT-4 API      │  │
+     │ ⏱ ~2-3 seconds            │  │
+     └─────────┬──────────────────┘  │
+               │                     │
+     ┌─────────▼──────────────────┐  │
+     │ 6a. PARSE RESPONSE         │  │ ┌──────────────────────────────┐
+     │ Extract & validate domain  │  │ │ 4b. EXECUTE PATTERN LOGIC    │
+     └─────────┬──────────────────┘  │ │ NO LLM - Pure pattern match  │
+               │                     │ └──────────┬───────────────────┘
+     ┌─────────▼──────────────────┐  │            │
+     │ 7a. EXECUTE DOMAIN SEARCH  │  │ ┌──────────▼─────────────────┐
+     │ Model.search(domain)       │  │ │ 5b. AGGREGATE/EXCLUDE      │
+     └─────────┬──────────────────┘  │ │ • Query secondary model     │
+               │                     │ │ • Count/filter by pattern   │
+               │                     │ │ • Return primary model IDs  │
+               │                     │ └──────────┬──────────────────┘
+               │                     │            │
+               │                  ┌──▼────────────▼──┐
+               │                  │ 6b. SEARCH PRIMARY│
+               │                  │ Model.search()    │
+               │                  └──────────┬────────┘
+               │                             │
+               │          ┌────────────────┐ │
+               └─────────►│ STORE RESULTS  │◄┘
+                          │ • Record IDs   │
+                          │ • Display names│
+                          │ • Model name   │
+                          └────────────────┘
+                                   │
+                          ┌────────▼───────┐
+                          │ 8. DISPLAY      │
+                          │ Results table   │
+                          └─────────────────┘
 ```
+
+**Key Difference**: Multi-model queries skip the GPT-4 API call entirely! They use pure regex pattern matching for reliability and speed.
+
+---
+
+## Multi-Model Queries (Advanced Feature)
+
+### What Are Multi-Model Queries?
+
+Normal queries search a single model. Multi-model queries correlate data across **two models** to answer complex questions.
+
+**Single-model example**: "Show unpaid invoices"
+```
+→ Search account.move where state != 'posted'
+```
+
+**Multi-model example**: "Show clients with 10+ invoices"
+```
+→ Search account.move for all invoices
+→ Group by customer (partner_id)
+→ Count per customer
+→ Filter where count >= 10
+→ Return res.partner records
+```
+
+### Supported Multi-Model Patterns
+
+| Pattern | Query Example | Operation |
+|---------|---------------|-----------|
+| **Count Aggregate** | "Clienti con più di 10 fatture" | Count secondary model records per primary, filter by threshold |
+| **Count Aggregate** | "Clienti con 5+ ordini" | Same but for orders |
+| **Exclusion** | "Prodotti mai ordinati" | Find primary records NOT present in secondary model |
+| **Exclusion** | "Fornitori senza acquisti" | Find suppliers with zero purchase orders |
+
+### How Multi-Model Queries Work
+
+```
+Input: "Clienti con più di 10 fatture"
+       ↓
+[MULTI-MODEL DETECTION]
+  Pattern: partners_with_count_invoices
+  Primary model: res.partner
+  Secondary model: account.move
+  Operation: count_aggregate
+  Threshold: 10
+       ↓
+[EXECUTION - Count Aggregate]
+  1. Search ALL account.move records
+     Result: [INV/1, INV/2, INV/3, ...]
+       ↓
+  2. Group by partner_id and count
+     Partner 1: 15 invoices ✓ (>= 10)
+     Partner 2: 3 invoices  ✗ (< 10)
+     Partner 3: 12 invoices ✓ (>= 10)
+       ↓
+  3. Return matching partners
+     Result: [Partner 1, Partner 3]
+       ↓
+Output: List of partners with 10+ invoices
+```
+
+### Adding New Multi-Model Patterns
+
+To add a new pattern, edit `MULTI_MODEL_PATTERNS` in `models/search_query.py`:
+
+```python
+'my_custom_pattern': {
+    'pattern': r'(your_regex_pattern)',
+    'primary_model': 'res.partner',
+    'secondary_model': 'account.move',
+    'operation': 'count_aggregate',  # or 'exclusion'
+    'aggregate_field': 'partner_id',
+    'link_field': 'partner_id',
+}
+```
+
+**Pattern fields:**
+- `pattern` (regex): Matches the natural language query
+- `primary_model`: Model to return results from
+- `secondary_model`: Model to aggregate/filter from
+- `operation`: Either `count_aggregate` or `exclusion`
+- `aggregate_field`: Field in secondary model linking to primary
+- `link_field`: Field to use for linking
 
 ---
 
@@ -471,10 +583,11 @@ Two access levels are implemented (see `security/ir.model.access.csv`):
 
 - **Max 50 results per query** (configurable in code)
 - **Only standard Odoo models** supported (custom models need manual configuration)
-- **Requires paid OpenAI API** (GPT-4 is not free, but cheap ~0.03¢ per query)
-- **No JOINs between models** (single-model searches only)
+- **Requires paid OpenAI API** (GPT-4 is not free, but cheap ~0.03¢ per query - multi-model queries don't use API)
+- **Multi-model JOINs** (supported! Limited to two-table correlations via pattern matching)
 - **Language**: Italian/English (easily extended to other languages)
 - **LLM Hallucinations**: Occasionally generates slightly wrong domains (we auto-fix common ones)
+- **Multi-model scalability**: Works efficiently up to ~100k records per table (after that, use raw SQL with caching)
 
 ---
 
@@ -580,12 +693,45 @@ ai-odoo-data-assistant/
 5. Add to `AVAILABLE_MODELS` list in `debug_fields.py`
 6. Test with `/ovunque/debug-fields?model=your.model`
 
+### Adding New Multi-Model Query Patterns
+
+Multi-model queries use pattern matching to detect complex queries automatically.
+
+**Step 1**: Identify your pattern
+```
+User query: "Clienti con più di 10 fatture"
+Primary model: res.partner (what we return)
+Secondary model: account.move (what we count/filter)
+Operation: count_aggregate (count invoices per customer)
+Threshold: 10 (from the number in the query)
+```
+
+**Step 2**: Create a regex pattern and add to `MULTI_MODEL_PATTERNS`
+```python
+'partners_with_count_invoices': {
+    'pattern': r'(clienti|partner).*?(?:con|with).*?(\d+)\s*(?:fatture|invoice)',
+    'primary_model': 'res.partner',
+    'secondary_model': 'account.move',
+    'operation': 'count_aggregate',
+    'aggregate_field': 'partner_id',
+    'link_field': 'partner_id',
+}
+```
+
+**Step 3**: Test your regex with the user's expected queries
+
+**Step 4**: The system auto-detects and executes:
+- `count_aggregate`: Groups secondary model by primary, filters by count
+- `exclusion`: Returns primary records NOT in secondary model
+- Custom: Add your own operation type with matching method `_execute_custom_operation()`
+
 ### Extending to Other Languages
 
 1. The prompt in `_build_prompt()` can be translated
 2. Update example queries in `_get_model_examples()` 
-3. The UI translations go in views XML files
-4. Add language-specific prompt templates
+3. Update multi-model patterns in `MULTI_MODEL_PATTERNS` with translated keywords
+4. The UI translations go in views XML files
+5. Add language-specific prompt templates
 
 ### Integrating Other LLMs
 
@@ -595,6 +741,8 @@ To use Claude, Ollama, or other LLMs instead of GPT-4:
 2. Adjust system message and parameters for your LLM
 3. Update imports and API key retrieval
 4. Test with your LLM's temperature/token settings
+
+**Note**: Multi-model queries don't use LLM - they use pure pattern matching for reliability.
 
 ---
 
@@ -646,6 +794,8 @@ AGPL-3.0
 
 - **Module README**: `addons/ovunque/README.md`
 - **Development Guide**: `addons/ovunque/DEVELOPMENT.md`
+- **Multi-Model Patterns**: `addons/ovunque/MULTI_MODEL_PATTERNS.md` - Detailed guide for cross-model queries
+- **Test Scripts**: `addons/ovunque/test_multi_model.py` - Test multi-model functionality
 - **Debug Guide**: `CLAUDE.md`
 - **Issues**: Check the repository issues tracker
 - **API Examples**: See controllers/search_controller.py for endpoint details
@@ -654,7 +804,18 @@ AGPL-3.0
 
 ## Changelog
 
-### v19.0.1.0.0 (Current)
+### v19.0.2.0.0 (Latest)
+
+**Multi-Model Queries Feature**
+- ✅ **NEW**: Support for complex cross-model queries
+- ✅ **NEW**: Pattern-based detection for "clients with N invoices" queries
+- ✅ **NEW**: Count aggregation (find records with N+ related items)
+- ✅ **NEW**: Exclusion queries (find records NOT in another model)
+- ✅ **NEW**: Extendable pattern system for custom queries
+- ✅ Enhanced logging with `[MULTI-MODEL]`, `[MULTI-MODEL-AGG]`, `[MULTI-MODEL-EXC]` prefixes
+- ✅ Updated documentation with multi-model examples
+
+### v19.0.1.0.0
 
 - ✅ Initial release with GPT-4 integration
 - ✅ Support for 9 major Odoo models
