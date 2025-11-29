@@ -538,7 +538,7 @@ class SearchQuery(models.Model):
             _logger.warning(f"[LLM] Prompt length: {len(prompt)} chars")
             
             response = client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
