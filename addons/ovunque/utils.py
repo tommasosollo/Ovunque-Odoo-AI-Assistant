@@ -1,5 +1,14 @@
 """
 Utility functions for Ovunque module
+
+This module provides helper functions for:
+- Configuring OpenAI API keys
+- Extracting model field information
+- Parsing and formatting search results
+- Validating Odoo domains
+- Common search pattern examples
+
+These functions are used by both the models and controllers.
 """
 
 import logging
@@ -10,15 +19,21 @@ _logger = logging.getLogger(__name__)
 
 def setup_api_key(env, api_key):
     """
-    Setup OpenAI API key in Odoo config
+    Configure the OpenAI API key in Odoo's ir.config_parameter.
+    
+    This stores the key in the database so it persists across Odoo restarts.
+    Can be called from Python shell or initialization scripts.
     
     Args:
         env: Odoo environment
-        api_key: OpenAI API key
+        api_key: OpenAI API key (format: "sk-...")
+    
+    Returns:
+        bool: True if successful, False if error
     
     Example:
         from ovunque.utils import setup_api_key
-        setup_api_key(self.env, 'sk-...')
+        setup_api_key(self.env, 'sk-proj-abcdef123456')
     """
     try:
         env['ir.config_parameter'].sudo().set_param('ovunque.openai_api_key', api_key)
@@ -31,15 +46,22 @@ def setup_api_key(env, api_key):
 
 def get_model_fields_for_llm(env, model_name, limit=30):
     """
-    Get model fields in a format suitable for LLM prompts
+    Extract model fields and format them as LLM-readable text.
+    
+    Used to build prompts for the LLM. Returns only stored fields
+    with their types and labels, which the LLM can use.
     
     Args:
         env: Odoo environment
-        model_name: Name of the model
-        limit: Maximum number of fields to return
+        model_name: Full model name (e.g., "res.partner", "account.move")
+        limit: Maximum number of fields to return (default 30)
     
     Returns:
-        Formatted string with field information
+        str: Formatted field list with types and labels, or empty string on error
+        
+    Example:
+        fields_text = get_model_fields_for_llm(env, 'res.partner', limit=50)
+        # Returns: "- id (integer): ID\n- name (char): Name\n- active (boolean): Active\n..."
     """
     try:
         Model = env[model_name]
@@ -68,14 +90,17 @@ def get_model_fields_for_llm(env, model_name, limit=30):
 
 def parse_search_results(records, max_results=50):
     """
-    Parse search results into a readable format
+    Convert Odoo recordset into a list of dicts for API responses.
+    
+    Extracts the ID and display_name from each record.
+    Limits results to max_results to prevent huge API responses.
     
     Args:
-        records: Recordset of search results
-        max_results: Maximum results to return
+        records: Odoo recordset (result of Model.search())
+        max_results: Maximum number of results to return (default 50)
     
     Returns:
-        List of dicts with id and display_name
+        list: List of dicts like [{"id": 1, "display_name": "Name1"}, ...]
     """
     results = []
     for i, record in enumerate(records):
@@ -91,13 +116,21 @@ def parse_search_results(records, max_results=50):
 
 def validate_domain(domain):
     """
-    Validate that domain is a proper Odoo domain
+    Validate that a domain has correct structure for Odoo.
+    
+    A valid Odoo domain is a list where each element is a 3-tuple:
+    [
+        ('field1', 'operator', value1),
+        ('field2', 'operator', value2),
+    ]
     
     Args:
         domain: Domain to validate (should be a list of tuples)
     
     Returns:
-        True if valid, False otherwise
+        bool: True if valid structure, False otherwise
+        
+    Note: This only checks structure, not field existence or operator validity.
     """
     if not isinstance(domain, list):
         return False
@@ -113,10 +146,18 @@ def validate_domain(domain):
 
 def common_search_patterns():
     """
-    Return common search pattern examples
+    Return curated examples of natural language queries for each supported model.
+    
+    These examples can be used in documentation or as suggestions in the UI
+    to help users understand what kinds of queries they can ask.
     
     Returns:
-        Dict with model names and example queries
+        dict: Keys are model names, values are lists of example queries
+        
+    Example:
+        patterns = common_search_patterns()
+        print(patterns['account.move'])
+        # Output: ["Unpaid invoices from this month", "All invoices from Rossi in 2024", ...]
     """
     return {
         'account.move': [

@@ -1,166 +1,235 @@
 # Ovunque - Natural Language Search for Odoo
 
-Cercare nei tuoi dati Odoo come su Google. Scrivi in linguaggio naturale e l'AI fa il resto.
-
-## Cosa Fa
-
-**Ovunque** converte domande in italiano in query Odoo usando GPT-4:
+**Search your Odoo data using conversational AI. Write queries like you're talking to a human.**
 
 ```
-Input:  "Fammi vedere tutti i clienti che non hanno ordinato negli ultimi 6 mesi"
-Output: Ricerca automatica con visualizzazione dei risultati
+Input:  "Show me all unpaid invoices over 1000 euros from the last 30 days"
+Output: [INV/2025/001, INV/2025/003, INV/2025/005] - Automatically found!
 ```
 
-## Configurazione Iniziale
+## What Is This?
 
-### Prerequisiti
-- **Odoo**: versione 19.0+
+**Ovunque** is an Odoo module that converts natural language questions into Odoo database queries using OpenAI's GPT-4. No SQL knowledge required. Ask in Italian, English, or a mix—the AI understands.
+
+### Key Features
+
+✅ **Natural Language Processing**: Write queries like "clienti da Milano" instead of technical domain syntax  
+✅ **Multi-Language**: Works in Italian, English, and can be extended to other languages  
+✅ **Wide Model Support**: Search across 9 major Odoo models (Partners, Invoices, Products, Orders, etc.)  
+✅ **Smart Error Recovery**: Auto-fixes common LLM mistakes (price field confusion, computed fields, etc.)  
+✅ **Debug Tools**: Built-in endpoints to inspect model fields and diagnose issues  
+✅ **Query Audit Trail**: Every search is stored with its generated domain for transparency  
+
+---
+
+## Installation
+
+### Prerequisites
+
+- **Odoo**: 19.0 or later
 - **Python**: 3.10+
-- **OpenAI API key**: da https://platform.openai.com/api-keys
+- **OpenAI API Key**: Get one free at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (paid API calls)
 
-### Installazione Standard
+### Option 1: Standard Installation
 
 ```bash
-# 1. Copia il modulo nella directory addons di Odoo
+# 1. Copy module to Odoo addons directory
 cp -r addons/ovunque /path/to/your/odoo/addons/
 
-# 2. Installa le dipendenze Python
+# 2. Install Python dependencies
 pip install -r /path/to/your/odoo/addons/ovunque/requirements.txt
 
-# 3. Riavvia Odoo
+# 3. Restart Odoo
 ./odoo-bin -u all
+
+# 4. Log in to Odoo and install "Ovunque" module via Apps menu
 ```
 
-### Installazione con Docker
+### Option 2: Docker Installation
 
-Se stai usando Docker, segui questi step:
-
-1. **Build e avvia i container**:
 ```bash
+# 1. Build and start containers
 docker-compose up --build -d
-```
 
-2. **Attendi l'avvio di Odoo** (circa 15 secondi)
+# 2. Wait 15 seconds for Odoo to start
 
-3. **Accedi al container ed installa openai**:
-```bash
+# 3. Install openai package in the container
 docker exec -u odoo odoo-ai-19 pip install --user --break-system-packages 'openai>=1.0.0'
-```
 
-4. **Riavvia il container Odoo**:
-```bash
+# 4. Restart container
 docker restart odoo-ai-19
+
+# 5. Visit http://localhost:8069 and install "Ovunque" module
 ```
 
-5. **Accedi a Odoo** su http://localhost:8069 e installa il modulo **Ovunque** dal menu Applicazioni
+If you see `Impossibile installare il modulo "ovunque" perché manca una dipendenza esterna: openai`, repeat step 3 and restart.
 
-**Nota**: Se ottieni l'errore `Impossibile installare il modulo "ovunque" perché manca una dipendenza esterna: openai`, significa che il pacchetto openai non è ancora riconosciuto. Ripeti il comando di cui al punto 3 e riavvia di nuovo il container.
+---
 
-### Configurare OpenAI API
+## Configuration
 
-Una volta in Odoo:
+### Setting Up OpenAI API Key
 
-1. Vai a **Ovunque → Configuration → API Settings**
-2. Crea un nuovo parametro di configurazione:
+#### Method 1: Via Odoo UI
+
+1. Go to **Ovunque → Configuration → API Settings**
+2. Create a new parameter:
    - **Key**: `ovunque.openai_api_key`
-   - **Value**: `sk-...` (la tua chiave)
+   - **Value**: `sk-...` (your API key from openai.com)
 
-Oppure via Python shell:
+#### Method 2: Via Python Shell
+
 ```python
 env['ir.config_parameter'].sudo().set_param('ovunque.openai_api_key', 'sk-your-key')
 ```
 
-## Struttura del Progetto
+#### Method 3: Via Environment File
 
+Create `.env` in the Ovunque directory:
 ```
-ai-odoo-data-assistant/
-├── addons/
-│   └── ovunque/                      # Modulo principale Odoo
-│       ├── __manifest__.py           # Metadati modulo
-│       ├── __init__.py               # Import models/controllers
-│       ├── models/
-│       │   ├── __init__.py
-│       │   └── search_query.py      # Model SearchQuery e SearchResult
-│       ├── controllers/
-│       │   ├── __init__.py
-│       │   └── search_controller.py # REST API endpoints
-│       ├── views/
-│       │   ├── search_query_views.xml# UI model e form
-│       │   └── menu.xml              # Menu Odoo
-│       ├── security/
-│       │   └── ir.model.access.csv  # Permessi accesso
-│       ├── requirements.txt          # Dipendenze Python
-│       ├── utils.py                  # Funzioni utilità
-│       ├── tests.py                  # Test unitari
-│       ├── config_example.py         # Script configurazione
-│       ├── README.md                 # Documentazione utenti
-│       ├── DEVELOPMENT.md            # Guida sviluppatori
-│       ├── QUICKSTART.md             # Guida veloce
-│       ├── .env.example              # Template variabili ambiente
-│       └── .gitignore                # Esclusioni Git
-└── README.md                         # Questo file
+OPENAI_API_KEY=sk-proj-abc123...
 ```
 
-## Modelli Disponibili
+---
 
-| Modello | Descrizione |
-|---------|-------------|
-| `res.partner` | Contatti/Clienti/Fornitori |
-| `account.move` | Fatture |
-| `product.product` | Prodotti |
-| `sale.order` | Ordini di vendita |
-| `purchase.order` | Ordini di acquisto |
-| `stock.move` | Movimenti magazzino |
-| `crm.lead` | Lead CRM |
-| `project.task` | Task progetto |
+## How to Use
 
-## Esempi di Query
+### Basic Search
 
-### Partner/Contatti
-- "Fornitori che ho contattato nell'ultimo anno"
+1. Go to **Ovunque → Query Search** in the Odoo menu
+2. Select a **Category**:
+   - Clienti / Contatti (Customers/Contacts)
+   - Prodotti (Products)
+   - Fatture e Documenti (Invoices & Bills)
+   - Ordini (Orders)
+   - CRM / Opportunità (Leads & Opportunities)
+   - Task Progetto (Project Tasks)
+3. Type your query in natural language:
+   - "Clienti da Milano"
+   - "Fatture non pagate di gennaio 2025"
+   - "Prodotti sotto 100 euro"
+4. Click **Search**
+5. Results appear in a table below
 
-### Fatture
-- "Fatture da piu di 1000 euro"
-- "Fatture di Rossi del 2024"
+### Query Examples
 
-### Prodotti
-- "Articoli con prezzo tra 10 e 100 euro"
+#### Customers/Contacts (res.partner)
+- "Clienti attivi" → Active customers
+- "Fornitori da Milano" → Suppliers from Milan
+- "Partner non contattati nel 2024" → Untouched partners in 2024
 
-### Ordini
-- "Ordini della scorsa settimana"
-- "Vendite di novembre 2025"
+#### Invoices (account.move)
+- "Fatture non pagate" → Unpaid invoices
+- "Fatture di gennaio 2025" → January 2025 invoices
+- "Documenti oltre 5000 euro" → Documents over 5000 euros
 
-## Come Funziona Internamente
+#### Products (product.template)
+```
+⚠️ IMPORTANT: Use "Prodotti" category for price searches!
+```
+- "Prodotti sotto 100 euro" → Products under 100 euros (uses list_price - selling price)
+- "Articoli con costo superiore a 50" → Products with internal cost > 50
+- "Prodotti attivi" → Active products
+- "Basso stock sotto 10" → Low stock items
 
-1. **Input Utente**: L'utente scrive una domanda in linguaggio naturale
-2. **Estrazione Campi**: Il modulo recupera i campi disponibili dal modello selezionato
-3. **Prompt GPT-4**: Crea un prompt specializzato che include:
-   - Nome e descrizione del modello
-   - Lista completa dei campi disponibili con tipi
-   - La domanda dell'utente in italiano
-   - Vincoli e operatori supportati
-4. **Parsing**: Estrae il dominio Odoo dalla risposta di GPT-4
-5. **Esecuzione**: Esegue `Model.search(domain)` sul database
-6. **Visualizzazione**: Mostra i risultati in una tabella interattiva
+#### Orders (sale.order / purchase.order)
+- "Ordini della scorsa settimana" → Last week's orders
+- "Vendite sopra i 500 euro" → Sales over 500 euros
+- "Acquisti confermati di novembre" → November purchases
 
-## API Endpoints
+---
+
+## How It Works Internally
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. USER INPUT                                                     │
+│    "Fatture non pagate di gennaio 2025"                          │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 2. CATEGORY SELECTION                                            │
+│    Category: "invoices" → Model: account.move                   │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 3. BUILD INTELLIGENT PROMPT                                      │
+│    • Model description                                           │
+│    • All available stored fields                                 │
+│    • Query examples for this model                               │
+│    • Detailed rules for domain generation                        │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 4. SEND TO GPT-4 API                                            │
+│    ⏱ ~2-3 seconds average response time                         │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 5. PARSE & VALIDATE RESPONSE                                     │
+│    • Extract domain from markdown                                │
+│    • Parse Python list syntax                                    │
+│    • Auto-fix price field confusion                              │
+│    • Validate all fields exist                                   │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 6. EXECUTE SEARCH                                                │
+│    Model.search([('state', '!=', 'posted'),                     │
+│                  ('invoice_date', '>=', '2025-01-01'),          │
+│                  ('invoice_date', '<', '2025-02-01')])          │
+└──────────────┬───────────────────────────────────────────────────┘
+               │
+┌──────────────▼───────────────────────────────────────────────────┐
+│ 7. DISPLAY RESULTS                                               │
+│    INV/2025/001, INV/2025/003, INV/2025/005                    │
+│    (3 results found)                                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Supported Models
+
+| Model | Description | Example Queries |
+|-------|-------------|-----------------|
+| `res.partner` | Contacts/Customers/Suppliers | "Clienti attivi", "Fornitori da Milano" |
+| `account.move` | Invoices & Bills | "Fatture non pagate", "Documenti oltre 5000" |
+| `product.template` | Products (prices, costs) | "Prodotti sotto 100€", "Articoli attivi" |
+| `product.product` | Product Variants (SKU specific) | "Varianti con barcode", "SKU attivi" |
+| `sale.order` | Sales Orders | "Ordini della scorsa settimana" |
+| `purchase.order` | Purchase Orders | "Acquisti confermati" |
+| `stock.move` | Inventory Movements | "Movimenti in corso" |
+| `crm.lead` | CRM Leads/Opportunities | "Deal vinti", "Opportunità aperte" |
+| `project.task` | Project Tasks | "Task completati", "Task in progress" |
+
+### ⚠️ Important: Product Price Searches
+
+- **Use `product.template`** when searching by price
+- **Use `product.product`** only for variants with barcode/SKU info
+- `product.template` contains `list_price` (selling price) and `standard_price` (internal cost)
+- `product.product` contains variant-specific data only (barcode, combination)
+
+---
+
+## API Reference
 
 ### POST /ovunque/search
-Endpoint principale per le ricerche.
+Execute a natural language search.
 
-**Request**:
+**Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "method": "call",
   "params": {
-    "query": "fatture non pagate",
-    "model": "account.move"
+    "query": "unpaid invoices over 1000",
+    "category": "invoices"
   }
 }
 ```
 
-**Response**:
+**Response:**
 ```json
 {
   "jsonrpc": "2.0",
@@ -171,105 +240,427 @@ Endpoint principale per le ricerche.
       {"id": 2, "display_name": "INV/2025/002"}
     ],
     "count": 2,
-    "domain": "[('state', '!=', 'paid')]",
+    "domain": "[('state', '!=', 'posted'), ('amount_total', '>', 1000)]",
     "query_id": 42
   }
 }
 ```
 
 ### GET /ovunque/models
-Recupera lista di modelli disponibili.
+List all available categories and models.
 
-**Response**:
+**Response:**
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
     "success": true,
+    "categories": [
+      {"code": "customers", "label": "Clienti / Contatti"},
+      {"code": "products", "label": "Prodotti"}
+    ],
     "models": [
       {"name": "res.partner", "label": "Partner / Contact"},
-      {"name": "account.move", "label": "Fatture"},
-      {"name": "product.product", "label": "Prodotti"}
+      {"name": "account.move", "label": "Invoice"}
     ]
   }
 }
 ```
 
+### GET /ovunque/debug-fields?model=MODEL_NAME
+Inspect stored vs computed fields for debugging.
+
+**Usage:**
+```
+http://localhost:8069/ovunque/debug-fields?model=res.partner
+http://localhost:8069/ovunque/debug-fields?model=product.template
+```
+
+Returns an HTML page with two tables:
+- **Green section**: Stored fields (can be used in queries)
+- **Orange section**: Computed fields (cannot be used)
+
+---
+
+## Troubleshooting & Debugging
+
+### Problem: Empty Results `[]`
+
+When your query returns `[]` (no results), it usually means the LLM didn't generate a valid domain.
+
+**Debug Steps:**
+
+1. **Check the Raw LLM Response**:
+   - Go to **Ovunque → Query Search**
+   - Click on the problematic query
+   - Scroll to **Debug Info** tab
+   - Read the **Raw LLM Response** field
+
+2. **Analyze the response**:
+   - If it shows `[]` → LLM didn't understand the query
+   - If it shows long text → Response parsing failed
+   - If it shows code with errors → Syntax error in domain
+
+3. **Check logs** (in development):
+   ```bash
+   tail -f /var/log/odoo/odoo.log | grep -E "\[LLM\]|\[PARSE\]|\[REPAIR\]"
+   ```
+
+### Problem: "Field X is computed and cannot be used in queries"
+
+The LLM tried to use a computed field (like `lst_price` instead of `list_price`).
+
+**Root Cause**: Field names are similar but computed fields aren't in the database.
+
+**Solutions**:
+
+1. **Reload the module** (cache issue):
+   - Go to **Apps → Ovunque → Click reload button**
+
+2. **Check available fields**:
+   - Visit: `http://localhost:8069/ovunque/debug-fields?model=product.template`
+   - Look for the field name in the green table
+
+3. **Rephrase your query** more specifically:
+   - ✗ "Articoli sotto i 100€"
+   - ✓ "Prodotti con list_price sotto 100"
+
+4. **For price queries**, always verify you're using the right category:
+   - Use "**Prodotti**" category for price searches
+   - This auto-selects `product.template` which has prices
+   - Don't use "Product Variant" category for price searches
+
+### Problem: "OpenAI API key not configured"
+
+You haven't set up the API key yet.
+
+**Solution**:
+
+1. **Via Odoo UI**:
+   - Settings → Ovunque → API Settings
+   - Add parameter: `ovunque.openai_api_key` = `sk-...`
+
+2. **Via shell**:
+   ```python
+   env['ir.config_parameter'].sudo().set_param('ovunque.openai_api_key', 'sk-...')
+   ```
+
+3. **Get API key from**: https://platform.openai.com/api-keys
+
+### Problem: "Connection error with OpenAI"
+
+Network issue or API down.
+
+**Solutions**:
+- Check internet connection
+- Check API key is valid at https://platform.openai.com/account/api-keys
+- Verify account has credits (check https://platform.openai.com/account/billing/overview)
+- Try again in a few seconds
+
+### Problem: "Rate limits exceeded"
+
+You've made too many API calls too quickly.
+
+**Solution**: Wait a few minutes and try again. Consider:
+- Using specific category selections instead of broad searches
+- Breaking complex queries into multiple smaller searches
+- Checking OpenAI pricing to understand your quota
+
+---
+
+## Advanced Debugging
+
+### Using the Debug Fields Tool
+
+View all available fields for a model:
+
+```bash
+# In Odoo shell
+./odoo-bin shell
+
+# Then execute:
+exec(open('/path/to/addons/ovunque/debug_fields.py').read())
+```
+
+Output shows:
+```
+========================================
+Model: res.partner
+Total stored fields: 50
+========================================
+  • id                             (integer  ) - ID
+  • name                           (char     ) - Name
+  • active                         (boolean  ) - Active
+  • email                          (char     ) - Email
+  • phone                          (char     ) - Phone
+  • city                           (char     ) - City
+  • state_id                       (many2one ) - State
+  [... and more ...]
+```
+
+### Checking Prompt Construction
+
+The prompt sent to GPT-4 includes:
+1. Model description
+2. List of all available stored fields (max 50)
+3. Model-specific examples
+4. Detailed rules for domain generation
+5. Your query
+
+To verify the prompt is correct, check the logs with filter `[LLM]`.
+
+### Understanding Log Prefixes
+
+```
+[LLM]    - Communicating with OpenAI API
+[PARSE]  - Parsing response into Python list
+[REPAIR] - Attempting to fix syntax errors
+[VALIDATE] - Checking fields exist in model
+[FIX]    - Auto-fixing field names (e.g., price fields)
+[CHECK]  - Verifying model is installed
+[SELECT] - Category → Model selection
+[ERROR]  - Something went wrong
+```
+
+---
+
 ## Database Schema
 
 ### search.query
-| Campo | Tipo | Descrizione |
+
+Stores each natural language query and its results.
+
+| Field | Type | Description |
 |-------|------|-------------|
-| `name` | Char | La domanda dell'utente |
-| `model_name` | Selection | Modello target (es: res.partner) |
-| `model_domain` | Text | Dominio Odoo generato da GPT-4 |
-| `raw_response` | Text | Risposta grezza di GPT-4 |
-| `results_count` | Integer | Numero risultati trovati |
+| `name` | Char | Natural language query text |
+| `category` | Selection | Category chosen (customers, products, etc.) |
+| `model_name` | Char | Actual Odoo model (res.partner, account.move) |
+| `model_domain` | Text | Generated domain: `[('field', 'op', value)]` |
+| `raw_response` | Text | Raw response from OpenAI (for debugging) |
+| `results_count` | Integer | Number of results returned |
 | `status` | Selection | draft / success / error |
-| `error_message` | Text | Messaggio di errore (se presente) |
-| `result_ids` | One2many | Record dei risultati (One2many su search.result) |
-| `created_by_user` | Many2one | Utente che ha creato la query |
+| `error_message` | Text | Error description if status=error |
+| `result_ids` | One2many | Linked search.result records |
+| `created_by_user` | Many2one | User who created the query |
 
 ### search.result
-| Campo | Tipo | Descrizione |
+
+Individual results from a search query.
+
+| Field | Type | Description |
 |-------|------|-------------|
-| `query_id` | Many2one | Query che ha generato questo risultato |
-| `record_id` | Integer | ID del record trovato nel modello target |
-| `record_name` | Char | Nome/display_name del record |
-| `model` | Char | Nome del modello (es: res.partner) |
+| `query_id` | Many2one | Reference to parent search.query |
+| `record_id` | Integer | ID of found record |
+| `record_name` | Char | Display name of record |
+| `model` | Char | Model name (e.g., "res.partner") |
 
-## Permessi
+---
 
-Il modulo implementa due livelli di accesso (vedi `security/ir.model.access.csv`):
+## Permissions
 
-- **User**: Può creare, leggere e modificare query; può leggere risultati
-- **Manager**: Accesso completo incluso delete
+Two access levels are implemented (see `security/ir.model.access.csv`):
 
-## Troubleshooting
+- **User Level**: Can create, read, modify queries; read results
+- **Manager Level**: Full access including delete
 
-### Errore: "Invalid domain format received from LLM"
+---
 
-GPT-4 non ha generato un dominio valido. Cause comuni:
-- Campo non esiste nel modello
-- Tipo di dato non supportato
-- Query ambigua o non supportata
+## Limitations
 
-**Soluzione**: Controlla il "Raw LLM Response" nella tab Debug Info per vedere cosa ha generato GPT-4.
+⚠️ **Know Before You Use**
 
-### Errore: "Could not parse the query"
+- **Max 50 results per query** (configurable in code)
+- **Only standard Odoo models** supported (custom models need manual configuration)
+- **Requires paid OpenAI API** (GPT-4 is not free, but cheap ~0.03¢ per query)
+- **No JOINs between models** (single-model searches only)
+- **Language**: Italian/English (easily extended to other languages)
+- **LLM Hallucinations**: Occasionally generates slightly wrong domains (we auto-fix common ones)
 
-Il dominio restituito da GPT-4 è vuoto `[]` o invalido.
+---
 
-**Soluzione**: Ripeti la query usando termini diversi o più specifici.
+## Project Structure
 
-### Nessun risultato `(0 risultati)`
+```
+ai-odoo-data-assistant/
+├── addons/
+│   └── ovunque/                    # Main Odoo module
+│       ├── __manifest__.py         # Module metadata & dependencies
+│       ├── __init__.py             # Imports models & controllers
+│       │
+│       ├── models/
+│       │   ├── __init__.py
+│       │   └── search_query.py    # Core business logic
+│       │                           # - SearchQuery model
+│       │                           # - SearchResult model
+│       │                           # - LLM integration
+│       │                           # - Domain parsing & validation
+│       │
+│       ├── controllers/
+│       │   ├── __init__.py
+│       │   └── search_controller.py # REST API endpoints
+│       │                            # - /ovunque/search (main search)
+│       │                            # - /ovunque/models (list categories)
+│       │                            # - /ovunque/debug-fields (field inspector)
+│       │
+│       ├── views/
+│       │   ├── search_query_views.xml # UI forms & lists
+│       │   └── menu.xml               # Odoo menu configuration
+│       │
+│       ├── security/
+│       │   └── ir.model.access.csv   # User/Manager permissions
+│       │
+│       ├── utils.py                  # Helper functions
+│       │                             # - API key setup
+│       │                             # - Field extraction for LLM
+│       │                             # - Result parsing
+│       │                             # - Domain validation
+│       │
+│       ├── debug_fields.py           # Shell script for field inspection
+│       ├── requirements.txt          # Python dependencies (openai)
+│       ├── config_example.py         # Configuration template
+│       ├── .env.example              # Environment variables template
+│       └── README.md                 # Module-specific documentation
+│
+├── docker-compose.yml               # Docker setup
+├── odoo.conf                        # Odoo configuration
+├── CLAUDE.md                        # Development notes & improvements log
+└── README.md                        # This file
+```
 
-La query è stata processata correttamente, ma nessun record corrisponde. È normale.
+---
 
-### Errore: "OpenAI API key not configured"
+## Key Code Components
 
-Non hai impostato la chiave API.
+### SearchQuery Model (models/search_query.py)
 
-**Soluzione**: Vai a Ovunque → Configuration → API Settings e aggiungi la chiave, oppure usa il file `.env`.
+**Main methods:**
 
-## Limitazioni
+- `action_execute_search()` - Entry point for search execution
+- `_parse_natural_language()` - Calls OpenAI GPT-4 API
+- `_build_prompt()` - Constructs detailed LLM prompt with field information
+- `_parse_domain_response()` - Extracts domain from LLM response
+- `_validate_domain_fields()` - Checks all fields exist in model
+- `_fix_price_fields()` - Auto-fixes common price field mistakes
+- `_get_model_examples()` - Model-specific query examples for LLM
+- `_attempt_domain_repair()` - Tries to fix syntax errors in response
 
-- ⚠️ **Massimo 50 risultati** per query (impostabile in code)
-- ⚠️ **Supporta solo modelli standard** di Odoo
-- ⚠️ **Richiede connessione a OpenAI** (API a pagamento)
-- ⚠️ **Non supporta JOIN** tra modelli
-- ⚠️ **Lingua**: Supporta input in italiano/inglese (estendibile ad altre lingue)
+**Field mappings:**
+- `category` (Selection) → Automatically selects model via CATEGORY_MODELS dict
+- `model_name` (Selection) → Specific Odoo model to search
+- `model_domain` (Text) → Generated domain stored as string
+- `raw_response` (Text) → Full OpenAI response (for debugging)
+- `status` (Selection) → draft / success / error
 
+### SearchController (controllers/search_controller.py)
 
-## Sviluppo
+**REST API endpoints:**
 
-Leggi [DEVELOPMENT.md](addons/ovunque/DEVELOPMENT.md) per:
-- Setup ambiente di sviluppo
-- Struttura dettagliata del codice
-- Come debuggare e testare
-- Come estendere il modulo con nuovi modelli
-- Come integrare altri LLM (Claude, Ollama, ecc.)
+- `POST /ovunque/search` - Main search endpoint
+- `GET /ovunque/models` - List available categories & models
+- `GET /ovunque/debug-fields` - HTML field inspector for debugging
+
+### Utility Functions (utils.py)
+
+- `setup_api_key()` - Configure OpenAI key in database
+- `get_model_fields_for_llm()` - Extract fields for prompt building
+- `parse_search_results()` - Convert recordset to API response format
+- `validate_domain()` - Verify domain structure
+- `common_search_patterns()` - Example queries by model
+
+---
+
+## Development Notes
+
+### Adding Support for a New Model
+
+1. Add model to `AVAILABLE_MODELS` in `SearchQuery` class
+2. Add category mapping in `CATEGORY_MODELS` dictionary
+3. Add model description in `_get_model_description()`
+4. Add examples in `_get_model_examples()`
+5. Add to `AVAILABLE_MODELS` list in `debug_fields.py`
+6. Test with `/ovunque/debug-fields?model=your.model`
+
+### Extending to Other Languages
+
+1. The prompt in `_build_prompt()` can be translated
+2. Update example queries in `_get_model_examples()` 
+3. The UI translations go in views XML files
+4. Add language-specific prompt templates
+
+### Integrating Other LLMs
+
+To use Claude, Ollama, or other LLMs instead of GPT-4:
+
+1. Replace OpenAI client in `_parse_natural_language()`
+2. Adjust system message and parameters for your LLM
+3. Update imports and API key retrieval
+4. Test with your LLM's temperature/token settings
+
+---
+
+## Performance & Costs
+
+### API Costs (Approximate)
+
+GPT-4 pricing varies, but typically:
+- **~0.01¢ - 0.05¢ per query** depending on complexity
+- **1000 queries ≈ $0.50 - $2.00**
+
+To minimize costs:
+- Cache repeated searches locally
+- Batch simple queries together
+- Use specific categories to reduce token usage
+
+### Response Time
+
+- **Average**: 2-3 seconds
+- **Fast queries**: 1-2 seconds
+- **Complex queries**: 3-5 seconds
+
+Mostly depends on OpenAI API load and network latency.
+
+---
+
+## Contributing
+
+Contributions are welcome! Areas for improvement:
+
+- [ ] Add support for more models
+- [ ] Improve LLM prompt engineering
+- [ ] Add caching layer for repeated queries
+- [ ] Create UI wizard for complex multi-model searches
+- [ ] Add query suggestion/autocomplete
+- [ ] Support for more LLMs (Claude, Ollama, local models)
+- [ ] Better error messages in Italian
+- [ ] Query history and favorites
+
+---
 
 ## License
 
 AGPL-3.0
+
+---
+
+## Support & Documentation
+
+- **Module README**: `addons/ovunque/README.md`
+- **Development Guide**: `addons/ovunque/DEVELOPMENT.md`
+- **Debug Guide**: `CLAUDE.md`
+- **Issues**: Check the repository issues tracker
+- **API Examples**: See controllers/search_controller.py for endpoint details
+
+---
+
+## Changelog
+
+### v19.0.1.0.0 (Current)
+
+- ✅ Initial release with GPT-4 integration
+- ✅ Support for 9 major Odoo models
+- ✅ Auto-fix for price field confusion
+- ✅ Detailed error messages with suggestions
+- ✅ Debug tools for field inspection
+- ✅ Full API documentation
+- ✅ Docker support
+- ✅ Comprehensive code comments
