@@ -1,329 +1,409 @@
-# Intelligent Query Format Detection - Debug Guide
+# Ovunque Development Guide
 
-## ULTIMO UPDATE (v5) - Structured Query Format (SQF)
-L'architettura è stata riprogettata per essere **intelligente e sicura**:
-- ✅ Seleziona categoria (Clienti, Prodotti, Ordini, ecc.)
-- ✅ Scrivi query in linguaggio naturale
-- 🆕 **LLM intelligente**: Decide se serve domain o JSON strutturato
-- 🆕 **Zero SQL**: Usa Python + Odoo ORM, mai SQL raw
-- 🆕 **Multi-model nativo**: Supporta aggregazioni, exclusioni, conteggi senza SQL
+Development notes, architecture decisions, and debugging tips.
 
-## Il Problema: Domain Limitations
+---
 
-Odoo domains non possono esprimere:
+## Architecture Overview
+
+**Ovunque** has two distinct query execution paths:
+
+### 1. Simple (Single-Model) Queries
+- Uses OpenAI GPT-4 to convert natural language to Odoo domain syntax
+- Example: "Unpaid invoices" → `[('state', '!=', 'posted')]`
+- ~1-2 seconds per query (API latency)
+
+### 2. Multi-Model Queries (Pattern-Based)
+- Uses **pure regex pattern matching** to detect cross-model queries
+- NO LLM involved - instant execution
+- Example: "Clients with 10+ invoices" → Automatic pattern detection + Python aggregation
+- ~100-500ms per query (zero API cost)
+
+---
+
+## Execution Flow
+
+```
+User Input: "Fatture non pagate"
+                    ↓
+[1] Check if multi-model pattern
+    No match → Go to Simple Query path
+                    ↓
+[2] Build prompt for GPT-4
+    • Model info
+    • Field list
+    • Query examples
+                    ↓
+[3] Call OpenAI API
+    Response: [('state', '!=', 'posted')]
+                    ↓
+[4] Validate domain fields
+    Check all fields exist in model
+                    ↓
+[5] Execute domain search
+    Model.search([...])
+                    ↓
+[6] Store results & display
+
+
+User Input: "Clienti con più di 10 fatture"
+                    ↓
+[1] Check if multi-model pattern
+    MATCH found: partners_with_count_invoices
+                    ↓
+[2] Execute pattern logic
+    (NO API CALL)
+    • Search all account.move
+    • Group by partner_id
+    • Count per partner
+    • Filter: count >= 10
+                    ↓
+[3] Return matching partners
+    Results: [Partner1, Partner3]
+                    ↓
+[4] Store results & display
+```
+
+---
+
+## Key Code Locations
+
+### models/search_query.py - SearchQuery Model
+
+**Entry Point:**
+- `action_execute_search()` - Main method called from UI
+
+**Multi-Model Path:**
+- `_detect_multi_model_query()` - Regex pattern matching
+- `_execute_multi_model_search()` - Routes to operation type
+- `_execute_count_aggregate()` - Count aggregation logic
+- `_execute_exclusion()` - Exclusion logic
+
+**Simple Query Path:**
+- `_execute_single_model_search()` - Domain-based execution
+- `_parse_natural_language()` - Calls OpenAI API
+- `_build_prompt()` - Constructs LLM prompt
+- `_parse_domain_response()` - Extracts domain from response
+- `_validate_domain_fields()` - Field validation
+- `_fix_price_fields()` - Auto-fix common field mistakes
+
+### Multi-Model Patterns (MULTI_MODEL_PATTERNS dict)
+
+Location: `models/search_query.py:line ~50`
+
+Each pattern has:
 ```python
-# Query: "Clienti con più di 3 fatture"
-# Impossibile in domain:
-[('invoices_count', '>', 3)]  ← invoices_count non esiste!
-# Domain supporta solo filtri semplici
-```
-
-## La Soluzione: Structured Query Format
-
-Invece di forcing la LLM a generare un dominio impossibile, la LLM genera **JSON strutturato** quando serve:
-
-```
-Query: "Clienti con più di 3 fatture"
-       ↓
-LLM decide: "Questo serve COUNT! Non è un dominio semplice"
-       ↓
-LLM risponde:
-{
-  "query_type": "count_aggregate",
-  "primary_model": "res.partner",
-  "secondary_model": "account.move",
-  "link_field": "partner_id",
-  "threshold": 3,
-  "comparison": ">="
+'pattern_name': {
+    'pattern': r'regex_to_match',           # Matches user query
+    'primary_model': 'res.partner',         # Model to return
+    'secondary_model': 'account.move',      # Model to aggregate/filter from
+    'operation': 'count_aggregate',         # 'count_aggregate' or 'exclusion'
+    'aggregate_field': 'partner_id',        # Field grouping
+    'link_field': 'partner_id',             # Link field
 }
-       ↓
-Sistema: "Ho riconosciuto JSON con query_type!"
-       ↓
-Esegui _execute_count_aggregate_from_spec()
 ```
 
-## Come Funziona
+---
 
-**File principali**:
-- `models/search_query.py`:
-  - `_parse_natural_language()`: Comunica con LLM (domain o JSON)
-  - `_parse_query_response()`: 🆕 Rileva formato (JSON vs domain)
-  - `_execute_structured_query()`: 🆕 Esegue query strutturate
-  - `_execute_count_aggregate_from_spec()`: 🆕 Logica aggregazione Python
-  - `_execute_exclusion_from_spec()`: 🆕 Logica esclusione Python
-
-**Niente SQL Generator**: Non serve più `sql_generator.py` (opzionale per future extensions)
-
-## Flusso di Esecuzione
-
-```
-1. [LLM] Riceve prompt con decision tree
-   "Questa query serve multi-model logic? Rispondi JSON o domain"
-
-2. [PARSE-JSON] Tenta parsing JSON
-   Se valido E ha query_type → Query strutturata ✓
-   Altrimenti → Tenta domain parsing
-
-3. [PARSE-DOMAIN] Tenta parsing domain
-   Estrae [('field', 'op', 'value')]
-
-4. [STRUCTURED-EXEC] Se è strutturata:
-   - Chiama _execute_count_aggregate_from_spec()
-   - O _execute_exclusion_from_spec()
-   - Ritorna risultati
-
-5. Oppure esecuzione domain normale
-```
-
-## Query Types Supportati
+## Multi-Model Query Operations
 
 ### Count Aggregation
-```json
-{
-  "query_type": "count_aggregate",
-  "primary_model": "res.partner",
-  "secondary_model": "account.move",
-  "link_field": "partner_id",
-  "threshold": 3,
-  "comparison": ">="
-}
-```
 
-**Cosa fa**: Conta record di `secondary_model` per ogni `primary_model`, ritorna quelli con count `>= threshold`
+**Use case**: "Clients with 10+ invoices"
 
-**Esempi**:
-- "Clienti con più di 3 fatture" → count >= 3
-- "Partner con almeno 5 ordini" → count >= 5
-- "Fornitori con meno di 2 acquisti" → count < 2
+**Logic**:
+1. Search all secondary model records (account.move)
+2. Group by aggregate_field (partner_id)
+3. Count records per group
+4. Filter where count >= threshold
+5. Return matching primary model records (res.partner)
+
+**Code**: `_execute_count_aggregate()`
 
 ### Exclusion
-```json
-{
-  "query_type": "exclusion",
-  "primary_model": "product.template",
-  "secondary_model": "sale.order",
-  "link_field": "product_id"
-}
+
+**Use case**: "Products never ordered"
+
+**Logic**:
+1. Search all secondary model records (sale.order)
+2. Extract link_field values (product_ids)
+3. Find primary records NOT in that set
+4. Return results
+
+**Code**: `_execute_exclusion()`
+
+---
+
+## Debugging
+
+### Log Prefixes
+
+When reviewing logs, look for these prefixes:
+
+```
+[LLM]          → OpenAI API communication
+[PARSE]        → Domain parsing from LLM response
+[REPAIR]       → Syntax error fixing attempts
+[VALIDATE]     → Field validation
+[FIX]          → Auto-fixing field names
+[MULTI-MODEL]  → Pattern detection and execution
+[ERROR]        → Errors during execution
 ```
 
-**Cosa fa**: Ritorna `primary_model` records che NON appaiono in `secondary_model`
-
-**Esempi**:
-- "Prodotti mai ordinati" → product.template NOT IN sale.order
-- "Fornitori senza acquisti" → res.partner NOT IN purchase.order
-
-## Monitoraggio e Debug
-
-### Log Prefix
-```
-[PARSE-JSON]      → Tentativo parsing JSON
-[PARSE-DOMAIN]    → Fallback domain parsing
-[STRUCTURED-EXEC] → Esecuzione query strutturata
-[STRUCTURED-AGG]  → Fase count aggregation
-[STRUCTURED-EXC]  → Fase exclusion
-```
-
-**Vedere i log**:
+**View logs**:
 ```bash
-tail -f /var/log/odoo/odoo.log | grep "PARSE-\|STRUCTURED"
+tail -f /var/log/odoo/odoo.log | grep "[MULTI-MODEL]\|[LLM]"
 ```
 
-### Campi tracciati in search.query
+### Debugging a Query
 
-```
-query_type = Selection(['simple_domain', 'count_aggregate', 'exclusion'])
-query_spec = Text(JSON strutturato)
-is_multi_model = Boolean(True se query tipo count_aggregate o exclusion)
-used_sql_fallback = Boolean(Future: Reserved per SQL fallback generation)
-```
+1. **Check the form**:
+   - Go to Ovunque → Query Search
+   - Click the problematic query
+   - See `model_domain` field (domain used)
+   - See `raw_response` field (raw LLM output)
 
-### Testare una query
-
-1. Vai a Ovunque → Query Search
-2. Scrivi: "Clienti con più di 3 fatture"
-3. Esegui
-4. Scorri a "Query Type" → Vedi "Count Aggregation"
-5. Scorri a "Query Specification (JSON)" → Vedi il JSON
-
-## Sicurezza
-
-✅ **Zero SQL injection**: Nessun SQL raw  
-✅ **Odoo RLS**: Usa sempre ORM, tutte le security rules applicate  
-✅ **Auditable**: Ogni azione è loggata da Odoo  
-✅ **Validabile**: JSON spec è facilmente inspecionabile  
-✅ **Python only**: Codice Python puro, no template SQL
-
-## Soluzioni Implementate
-
-### 1. **Prompt Migliorato** (search_query.py)
-- Aggiunto descrizione del modello con `_get_model_description()`
-- Aggiunto esempi specifici per ogni modello con `_get_model_examples()`
-- Aumentati campi da 20 a 50 in `_get_field_info()`
-- Aggiunto prompt più dettagliato e ben strutturato
-
-### 2. **Logging Dettagliato** (search_query.py:79-107, 214-254)
-Aggiunti log con prefissi per tracciare il flusso:
-- `[LLM]` - Fase di comunicazione con OpenAI
-- `[PARSE]` - Fase di parsing del response
-- `[REPAIR]` - Tentativi di aggiustamento
-
-## Come Debuggare
-
-### Passo 1: Controllare i log
-```
-In Odoo → Settings → Technical → Logs
-Filtrare per: "[LLM]" o "[PARSE]"
-```
-
-### Passo 2: Leggere la "Raw LLM Response"
-1. Vai su Ovunque → Query Search
-2. Clicca sulla query problematica
-3. Scorri in basso a "Debug Info"
-4. Leggi il campo "Raw LLM Response"
-
-Se vedi:
-- **`[]`** = LLM non ha capito la query
-- **Testo lungo** = Response non è una lista Python valida
-- **Codice ma con errori** = Syntax error nel dominio
-
-### Passo 3: Verificare il prompt
-Nel log (setting "SQL_DEBUG"), cerca `[LLM] Prompt length:` per vedere se è stato costruito correttamente.
-
-## Test SQL Fallback
-
-### Query che attivano SQL (Domain-only fallback)
-
-Queste query non funzionano col dominio puro, attivano SQL:
-
-**Aggregazioni (COUNT)**:
-```
-"Clienti con più di 10 fatture"
-"Partner con 5+ ordini"
-"Fornitori con meno di 3 acquisti"
-```
-
-**Range queries**:
-```
-"Prodotti ordinati tra 5 e 20 volte"
-"Clienti con fatture tra 1000 e 5000 euro"
-```
-
-**Temporal logic**:
-```
-"Fornitori attivi negli ultimi 6 mesi"
-"Clienti non contattati da 1 anno"
-```
-
-### Come verificare SQL in produzione
-
-1. **Seleziona una query dal log**:
+2. **Check logs**:
    ```bash
-   grep "Domain returned empty results" /var/log/odoo/odoo.log | tail -1
+   tail -f /var/log/odoo/odoo.log | grep "[LLM]\|[PARSE]"
    ```
 
-2. **Vai nella query in Odoo**:
-   - Ovunque → Query Search
-   - Clicca sulla query
-   - Scroll down a "Generated SQL Query"
-   - Vedi il SQL generato
-
-3. **Esegui SQL direttamente (per debug)**:
-   ```sql
-   -- Accedi al DB Odoo
-   psql -d odoo_db
-   
-   -- Copia il SQL generato e esegui
-   SELECT DISTINCT partner_id 
-   FROM account_move 
-   GROUP BY partner_id 
-   HAVING COUNT(*) >= 10;
-   ```
-
-4. **Verifica i risultati**:
-   - Se SQL ritorna ID: ✓ Fallback ha funzionato
-   - Se SQL è vuoto: ⚠️ LLM ha generato query sbagliata
-   - Se SQL ha errore: ❌ Validation ha fallito
-
-## Test Domain-based Queries
-
-Esempi di query che dovrebbero funzionare col dominio:
-
-### res.partner
-- "Clienti"
-- "Fornitori attivi"
-- "Partner da Milano"
-
-### account.move
-- "Fatture non pagate"
-- "Fatture di gennaio 2025"
-
-### product.template (for prices/costs)
-- "Prodotti sotto 100 euro"
-- "Articoli con prezzo inferiore a 50"
-- "Prodotti attivi"
-
-### product.product (for variants)
-- "Varianti con barcode"
-- "Varianti attive"
-
-## Errore: "Field X is computed and cannot be used in queries"
-
-La LLM ha usato un campo **computed** (calcolato) come `lst_price` al posto del campo reale `list_price`.
-
-### Root Cause:
-- Il prompt della LLM non mostrava SOLO i campi stored
-- La LLM ha indovinato il nome del campo
-
-### Soluzioni Implementate (v2):
-1. **Filtro dei campi**: Ora il prompt mostra SOLO i campi del database (stored)
-2. **Mappature esplicite**: Per product.product, il prompt dice chiaramente:
-   ```
-   "price" or "selling price" = list_price
-   "cost" = standard_price
-   "quantity" = qty_available
-   ```
-3. **Messaggi di errore migliorati**: Se la LLM usa un campo sbagliato, vedrai:
-   ```
-   Field "lst_price" is computed (not in database).
-   Use one of: active, barcode, can_image_1024_be_zoomed, ...
-   ```
-
-### Se Continua a Non Funzionare:
-1. **Ricarica il modulo Odoo**: Qualche volta il cache del prompt non si aggiorna
-   ```
-   Odoo → Moduli App → Ovunque → Click (reload)
-   ```
-
-2. **Verifica i campi disponibili**:
+3. **Inspect available fields**:
    ```bash
-   ./odoo-bin shell
+   # In Odoo shell
+   ./odoo-bin shell -d dbname
    exec(open('/path/to/addons/ovunque/debug_fields.py').read())
    ```
 
-3. **Usa una query più specifica**:
-   - ✓ "Prodotti con list_price sotto 100"
-   - ✗ "Articoli sotto i 100€" (troppo vago, LLM potrebbe confondersi)
+   Or visit: `http://localhost:8069/ovunque/debug-fields?model=res.partner`
 
-## Altre Cause Residue
+---
 
-1. **Query troppo ambigua**
-   - Es: "Cose" senza specificare il tipo
-   - Soluzione: Usare termini più specifici
+## Common Issues
 
-2. **API Key scaduta/invalida**
-   - Soluzione: Testare con API key nuova
+### Empty Results `[]`
 
-3. **Modello non supportato**
-   - Soluzione: Aggiungere il modello a `AVAILABLE_MODELS` e a `_get_model_examples()`
+**Cause**: LLM didn't generate a valid domain
 
-## Logs da Controllare
-In caso di problema persistente:
+**Fix**:
+1. Check `raw_response` field in query form
+2. Look for syntax errors in generated domain
+3. Try rephrasing query more specifically
+4. Check available fields with debug endpoint
+
+### "Field X is computed and cannot be used in queries"
+
+**Cause**: LLM used a computed field (not stored in DB)
+
+**Fix**:
+1. Use `/ovunque/debug-fields?model=X` to see stored fields only
+2. Rephrase query with specific field names
+3. For products: use `list_price` not `lst_price` or `price`
+
+### OpenAI API Errors
+
+**Cause**: API key invalid, rate limit, or no credits
+
+**Fix**:
+1. Check API key at https://platform.openai.com/api-keys
+2. Verify account has credits
+3. Wait a few minutes for rate limits to reset
+4. Test key in Python:
+   ```python
+   from openai import OpenAI
+   client = OpenAI(api_key='sk-...')
+   models = client.models.list()
+   ```
+
+---
+
+## Adding New Multi-Model Patterns
+
+### Step 1: Define the Pattern
+
+Edit `models/search_query.py`, find `MULTI_MODEL_PATTERNS` dict:
+
+```python
+MULTI_MODEL_PATTERNS = {
+    'my_new_pattern': {
+        'pattern': r'(your|keywords).*?regex.*?pattern',
+        'primary_model': 'res.partner',
+        'secondary_model': 'account.move',
+        'operation': 'count_aggregate',  # or 'exclusion'
+        'aggregate_field': 'partner_id',
+        'link_field': 'partner_id',
+    }
+}
 ```
-tail -f /var/log/odoo/odoo.log | grep "[LLM]\|[PARSE]\|[REPAIR]"
+
+### Step 2: Test Regex
+
+```bash
+# In Python
+import re
+pattern = r'(your|keywords).*?regex'
+test_queries = [
+    "Your test query 1",
+    "Your test query 2",
+]
+for query in test_queries:
+    match = re.search(pattern, query, re.IGNORECASE)
+    print(f"{query} → {match}")
 ```
 
-Questo mostrerà:
-- Esatta query inviata
-- Risposta ricevuta
-- Tentativo di parsing
-- Errori specifici
+### Step 3: Test in Odoo
+
+1. Reload module: Apps → Ovunque → Reload
+2. Go to Ovunque → Query Search
+3. Test your pattern query
+4. Check logs for `[MULTI-MODEL]` entries
+
+---
+
+## Performance Considerations
+
+### Single-Model Queries
+- **Speed**: Limited by OpenAI API (~1-2 seconds)
+- **Cost**: ~0.03¢ per query
+- **Bottleneck**: API latency
+
+### Multi-Model Queries
+- **Speed**: Python execution (~100-500ms)
+- **Cost**: Free (no API calls)
+- **Bottleneck**: Database queries for large datasets
+
+### Scaling
+
+**For better performance**:
+- Index frequently searched fields
+- Use multi-model patterns for repetitive complex queries (saves API costs)
+- Cache results if needed
+- For >100k records per table, consider custom SQL with caching
+
+---
+
+## Project Files
+
+### Core Implementation
+- `models/search_query.py` - Main SearchQuery model (1000+ lines)
+- `controllers/search_controller.py` - REST API endpoints
+- `views/search_query_views.xml` - UI forms and lists
+
+### Utilities
+- `utils.py` - Helper functions (API key, field extraction)
+- `debug_fields.py` - Shell script to inspect model fields
+- `sql_generator.py` - Optional SQL fallback (for future use)
+
+### Config
+- `__manifest__.py` - Module metadata
+- `requirements.txt` - Python dependencies
+- `.env.example` - Environment variable template
+- `config_example.py` - Configuration template
+
+### Documentation
+- `README.md` - User documentation
+- `DEVELOPMENT.md` - Developer guide
+- `MULTI_MODEL_PATTERNS.md` - Pattern reference
+- `RELEASE_NOTES_v2.0.0.md` - Version history
+
+---
+
+## Development Workflow
+
+### Setup Local Environment
+
+```bash
+# Clone and setup
+git clone <repo>
+cd ai-odoo-data-assistant
+
+# Install dependencies
+pip install -r addons/ovunque/requirements.txt
+
+# Run Odoo in dev mode
+./odoo-bin -c odoo.conf -d mydb -u all --dev=all
+```
+
+### Making Changes
+
+1. Edit files in `addons/ovunque/models/` or `controllers/`
+2. Reload module: Apps → Ovunque → Reload (or restart Odoo)
+3. Test in UI or via API
+4. Check logs with appropriate grep filters
+
+### Testing Patterns
+
+```bash
+# Test multi-model pattern detection
+./odoo-bin shell -d mydb
+exec(open('addons/ovunque/test_multi_model.py').read())
+```
+
+### Code Style
+
+- Follow Odoo conventions (PEP 8 for Python)
+- Add logging with proper prefixes: `_logger.info(f"[PREFIX] message")`
+- Document complex methods with docstrings
+- Use type hints where helpful
+
+---
+
+## Future Improvements
+
+- [ ] Support 3+ table correlations
+- [ ] Temporal patterns (e.g., "not contacted in 6 months")
+- [ ] SQL optimization for large datasets with caching
+- [ ] Pattern learning from user feedback
+- [ ] UI wizard for creating custom patterns
+- [ ] Support for custom models
+- [ ] Advanced aggregations (SUM, AVG, etc.)
+
+---
+
+## Security Notes
+
+✅ All queries use Odoo ORM (no raw SQL)
+✅ Odoo RLS (Row-Level Security) always applied
+✅ Field validation prevents invalid field names
+✅ All queries audited and logged
+✅ API key stored securely in database parameters
+
+---
+
+## Useful Commands
+
+### Inspect Model Fields
+```bash
+./odoo-bin shell -d mydb
+Model = env['res.partner']
+for field_name, field_obj in Model._fields.items():
+    print(f"{field_name}: {field_obj.type}")
+```
+
+### Test Domain Manually
+```bash
+./odoo-bin shell -d mydb
+domain = [('state', '!=', 'posted')]
+results = env['account.move'].search(domain)
+for r in results:
+    print(r.name)
+```
+
+### Check OpenAI Connection
+```python
+from openai import OpenAI
+client = OpenAI(api_key='sk-...')
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(response.choices[0].message.content)
+```
+
+---
+
+## References
+
+- **Odoo Documentation**: https://www.odoo.com/documentation/
+- **OpenAI API**: https://platform.openai.com/docs/api-reference
+- **Odoo Domain Syntax**: https://www.odoo.com/documentation/latest/developer/reference/orm.html#odoo.models.Model.search

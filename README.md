@@ -9,13 +9,14 @@ Output: [INV/2025/001, INV/2025/003, INV/2025/005] - Automatically found!
 
 ## What Is This?
 
-**Ovunque** is an Odoo module that converts natural language questions into Odoo database queries using OpenAI's GPT-4. No SQL knowledge required. Ask in Italian, English, or a mix—the AI understands.
+**Ovunque** is an Odoo module that converts natural language questions into Odoo database queries using OpenAI's GPT-4 (for simple queries) or pure pattern matching (for complex multi-model queries). No SQL knowledge required. Ask in Italian, English, or a mix—the AI understands.
 
 ### Key Features
 
 ✅ **Natural Language Processing**: Write queries like "clienti da Milano" instead of technical domain syntax  
 ✅ **Multi-Language**: Works in Italian, English, and can be extended to other languages  
 ✅ **Wide Model Support**: Search across 9 major Odoo models (Partners, Invoices, Products, Orders, etc.)  
+✅ **Smart Multi-Model Queries**: Pattern-based cross-model searches with no API overhead  
 ✅ **Smart Error Recovery**: Auto-fixes common LLM mistakes (price field confusion, computed fields, etc.)  
 ✅ **Debug Tools**: Built-in endpoints to inspect model fields and diagnose issues  
 ✅ **Query Audit Trail**: Every search is stored with its generated domain for transparency  
@@ -28,7 +29,7 @@ Output: [INV/2025/001, INV/2025/003, INV/2025/005] - Automatically found!
 
 - **Odoo**: 19.0 or later
 - **Python**: 3.10+
-- **OpenAI API Key**: Get one free at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (paid API calls)
+- **OpenAI API Key**: Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (simple queries use API; multi-model queries don't)
 
 ### Option 1: Standard Installation
 
@@ -62,7 +63,7 @@ docker restart odoo-ai-19
 # 5. Visit http://localhost:8069 and install "Ovunque" module
 ```
 
-If you see `Impossibile installare il modulo "ovunque" perché manca una dipendenza esterna: openai`, repeat step 3 and restart.
+If you see "Impossibile installare il modulo" with missing openai dependency, repeat step 3 and restart.
 
 ---
 
@@ -113,28 +114,21 @@ OPENAI_API_KEY=sk-proj-abc123...
 
 ### Query Examples
 
-#### 🆕 Multi-Model Queries (Cross-Model Searches)
+#### Single-Model Queries (Simple)
 
-The system now supports **complex queries that span multiple models**:
+These use GPT-4 to convert natural language to Odoo domains:
 
-- "**Clienti con più di 10 fatture**" → Clients with 10+ invoices (aggregation)
-- "**Fornitori che non hanno fornito da 6 mesi**" → Inactive suppliers (temporal)
-- "**Prodotti mai ordinati**" → Products with zero orders (exclusion)
-- "**Clienti con ordini sopra 5000 euro**" → Clients with large orders
-
-How it works: The system detects multi-model patterns, queries both tables, and correlates the results.
-
-#### Customers/Contacts (res.partner)
+**Customers/Contacts (res.partner)**
 - "Clienti attivi" → Active customers
 - "Fornitori da Milano" → Suppliers from Milan
 - "Partner non contattati nel 2024" → Untouched partners in 2024
 
-#### Invoices (account.move)
+**Invoices (account.move)**
 - "Fatture non pagate" → Unpaid invoices
 - "Fatture di gennaio 2025" → January 2025 invoices
 - "Documenti oltre 5000 euro" → Documents over 5000 euros
 
-#### Products (product.template)
+**Products (product.template)**
 ```
 ⚠️ IMPORTANT: Use "Prodotti" category for price searches!
 ```
@@ -143,263 +137,127 @@ How it works: The system detects multi-model patterns, queries both tables, and 
 - "Prodotti attivi" → Active products
 - "Basso stock sotto 10" → Low stock items
 
-#### Orders (sale.order / purchase.order)
+**Orders (sale.order / purchase.order)**
 - "Ordini della scorsa settimana" → Last week's orders
 - "Vendite sopra i 500 euro" → Sales over 500 euros
 - "Acquisti confermati di novembre" → November purchases
 
----
+#### Multi-Model Queries (Pattern-Based)
 
-## How It Works Internally
+These automatically detect cross-model patterns with NO API overhead:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ 1. USER INPUT                                                     │
-│    "Fatture non pagate di gennaio 2025"                          │
-│    OR: "Clienti con più di 10 fatture" (multi-model)            │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│ 2. DETECT QUERY TYPE                                             │
-│    Is this a multi-model query?                                  │
-│    Check regex patterns for cross-model searches                 │
-└──────────────┬─────────────────────┬──────────────────────────────┘
-               │                     │
-         ┌─────▼─────┐        ┌──────▼──────┐
-         │   NO      │        │     YES     │
-         │ (Standard)│        │ (Multi-M)   │
-         └─────┬─────┘        └──────┬──────┘
-               │                     │
-     ┌─────────▼───────────┐   ┌─────▼───────────────────┐
-     │ 3a. CATEGORY SELECT │   │ 3b. DETECT PATTERN      │
-     │ invoices→account.m. │   │ partners_with_count_... │
-     └─────────┬───────────┘   └─────┬───────────────────┘
-               │                     │
-     ┌─────────▼──────────────────┐  │
-     │ 4a. BUILD PROMPT (GPT)     │  │
-     │ • Fields, examples, rules  │  │
-     └─────────┬──────────────────┘  │
-               │                     │
-     ┌─────────▼──────────────────┐  │
-     │ 5a. SEND TO GPT-4 API      │  │
-     │ ⏱ ~2-3 seconds            │  │
-     └─────────┬──────────────────┘  │
-               │                     │
-     ┌─────────▼──────────────────┐  │
-     │ 6a. PARSE RESPONSE         │  │ ┌──────────────────────────────┐
-     │ Extract & validate domain  │  │ │ 4b. EXECUTE PATTERN LOGIC    │
-     └─────────┬──────────────────┘  │ │ NO LLM - Pure pattern match  │
-               │                     │ └──────────┬───────────────────┘
-     ┌─────────▼──────────────────┐  │            │
-     │ 7a. EXECUTE DOMAIN SEARCH  │  │ ┌──────────▼─────────────────┐
-     │ Model.search(domain)       │  │ │ 5b. AGGREGATE/EXCLUDE      │
-     └─────────┬──────────────────┘  │ │ • Query secondary model     │
-               │                     │ │ • Count/filter by pattern   │
-               │                     │ │ • Return primary model IDs  │
-               │                     │ └──────────┬──────────────────┘
-               │                     │            │
-               │                  ┌──▼────────────▼──┐
-               │                  │ 6b. SEARCH PRIMARY│
-               │                  │ Model.search()    │
-               │                  └──────────┬────────┘
-               │                             │
-               │          ┌────────────────┐ │
-               └─────────►│ STORE RESULTS  │◄┘
-                          │ • Record IDs   │
-                          │ • Display names│
-                          │ • Model name   │
-                          └────────────────┘
-                                   │
-                          ┌────────▼───────┐
-                          │ 8. DISPLAY      │
-                          │ Results table   │
-                          └─────────────────┘
-```
+- "**Clienti con più di 10 fatture**" → Clients with 10+ invoices
+- "**Fornitori con 5+ ordini**" → Suppliers with 5+ orders
+- "**Prodotti mai ordinati**" → Products with zero sales
+- "**Clienti senza acquisti**" → Customers with no purchase orders
 
-**Key Difference**: Multi-model queries skip the GPT-4 API call entirely! They use pure regex pattern matching for reliability and speed.
+**Key difference**: Multi-model queries skip the OpenAI API entirely and use pure regex pattern matching for speed and reliability.
 
 ---
 
-## Intelligent Query Format Detection
+## How It Works
 
-### The Problem Solved
-
-Traditional approach: **LLM generates Odoo domains**
-- ✗ Domains can't express: "Clients with 10+ invoices"
-- ✗ Domains can't do: exclusion, aggregation, multi-model joins
-- ✓ But domains ARE: simple, secure, predictable
-
-### The Solution: Structured Query Format (SQF)
-
-Ovunque uses **intelligent format detection**. The LLM now decides:
+### Simple (Single-Model) Queries
 
 ```
-Query → LLM analyzes complexity
-         ↓
-    Is this SIMPLE? (filter, search)
-         ↓ YES
-    Return DOMAIN: [('field', '=', 'value')]
-         ↓
-    Is this COMPLEX? (count, aggregation, exclusion)
-         ↓ YES
-    Return JSON SPEC: {"query_type": "count_aggregate", ...}
-         ↓
-    System executes appropriate method (no SQL!)
+User Query: "Fatture non pagate di gennaio 2025"
+                    ↓
+[1] Select Model from Category
+    Category: invoices → Model: account.move
+                    ↓
+[2] Build Prompt for GPT-4
+    • Model fields (50 stored fields)
+    • Model-specific examples
+    • User query
+    • Instructions to generate Odoo domain
+                    ↓
+[3] Call OpenAI API
+    ⏱ ~1-2 seconds
+    Response: [('state', '!=', 'posted'), ('date', '>=', '2025-01-01')]
+                    ↓
+[4] Validate & Execute Domain
+    Search: account.move.search([...])
+                    ↓
+[5] Display Results
+    [INV/001, INV/003, INV/005]
 ```
 
-### Architecture
-
-| Query Type | Detection | Execution | Security |
-|-----------|-----------|-----------|----------|
-| **Simple** | Regex + LLM | Odoo Domain | ✅ ORM validates |
-| **Aggregate** | LLM (JSON) | Pure Python + ORM | ✅ Full Odoo RLS |
-| **Exclusion** | LLM (JSON) | Pure Python + ORM | ✅ Full Odoo RLS |
-
-### Structured Query Types
-
-**1. Count Aggregation**
-```json
-{
-  "query_type": "count_aggregate",
-  "primary_model": "res.partner",
-  "secondary_model": "account.move",
-  "link_field": "partner_id",
-  "threshold": 10,
-  "comparison": ">="
-}
-```
-Use for: "Clients with 10+ invoices", "Partners with at least 5 orders"
-
-**2. Exclusion**
-```json
-{
-  "query_type": "exclusion",
-  "primary_model": "product.template",
-  "secondary_model": "sale.order",
-  "link_field": "product_id"
-}
-```
-Use for: "Products never ordered", "Suppliers with no purchases"
-
-### How the LLM Decides
-
-The system prompts the LLM:
+### Multi-Model Queries (Pattern-Matched)
 
 ```
-"Analyze this query. Does it need multi-model logic?
-- YES (counting, aggregation) → Respond with JSON
-- NO (simple filter) → Respond with domain list"
-
-Query: "Clients with more than 3 invoices"
-↓
-LLM recognizes: needs to COUNT invoices per client
-↓
-Responds: {"query_type": "count_aggregate", ...}
+User Query: "Clienti con più di 10 fatture"
+                    ↓
+[1] Detect Multi-Model Pattern
+    Regex match: partners_with_count_invoices
+    Pattern config: {
+      primary_model: res.partner,
+      secondary_model: account.move,
+      operation: count_aggregate,
+      threshold: 10
+    }
+    ⏱ Instant - no API call needed!
+                    ↓
+[2] Execute Count Aggregation
+    • Search all account.move records
+    • Group by partner_id
+    • Count invoices per partner
+    • Filter: count >= 10
+                    ↓
+[3] Return Matching Partners
+    [Partner 1 (15 invoices), Partner 3 (12 invoices)]
 ```
-
-### Advantages vs Pure SQL
-
-✅ **Safer**: Uses Odoo ORM, not raw SQL
-✅ **Auditable**: Full Odoo record logging
-✅ **Compliant**: Respects all security rules (RLS, field access)
-✅ **Maintainable**: Python, not hardcoded SQL
-✅ **Scalable**: Add new query_types without changing LLM
-
-### Example: "Clients with 3+ fatture"
-
-**Flow**:
-1. LLM receives prompt with decision tree
-2. LLM recognizes: "3+ fatture" = count aggregation
-3. LLM returns JSON spec (not domain)
-4. System parses JSON → calls `_execute_count_aggregate_from_spec()`
-5. Pure Python counts invoices per partner
-6. Returns partners with >= 3 invoices
-
-**Debugging**:
-
-View query spec:
-- Go to Ovunque → Query Search → Click query
-- See "Query Type" field (simple_domain, count_aggregate, exclusion)
-- See "Query Specification (JSON)" field with full spec
-
-Check logs:
-```bash
-tail -f /var/log/odoo/odoo.log | grep "[PARSE-\|STRUCTURED\|LLM]"
-```
-
-Log phases:
-- `[LLM]` - OpenAI communication phase
-- `[PARSE-JSON]` - LLM response JSON parsing
-- `[PARSE-DOMAIN]` - Fallback to domain parsing
-- `[STRUCTURED-EXEC]` - Query execution
-- `[STRUCTURED-AGG]` - Count aggregation phase
-- `[STRUCTURED-EXC]` - Exclusion filter phase
-
-**Tracked Fields** in search.query form:
-- `query_type` - Query classification (simple_domain, count_aggregate, exclusion)
-- `query_spec` - Full JSON specification for structured queries
-- `is_multi_model` - Boolean flag for complex multi-model queries
-- `used_sql_fallback` - Reserved for future SQL fallback (always False in v2.0)
 
 ---
 
-## Multi-Model Queries (Advanced Feature)
+## Multi-Model Queries - In Detail
 
 ### What Are Multi-Model Queries?
 
 Normal queries search a single model. Multi-model queries correlate data across **two models** to answer complex questions.
 
-**Single-model example**: "Show unpaid invoices"
+**Single-model**: "Show unpaid invoices"
 ```
 → Search account.move where state != 'posted'
 ```
 
-**Multi-model example**: "Show clients with 10+ invoices"
+**Multi-model**: "Show clients with 10+ invoices"
 ```
-→ Search account.move for all invoices
-→ Group by customer (partner_id)
-→ Count per customer
+→ Count all invoices per client
 → Filter where count >= 10
-→ Return res.partner records
+→ Return matching clients
 ```
 
-### Supported Multi-Model Patterns
+### Built-In Patterns
 
-| Pattern | Query Example | Operation |
+| Pattern | Example Query | Operation |
 |---------|---------------|-----------|
-| **Count Aggregate** | "Clienti con più di 10 fatture" | Count secondary model records per primary, filter by threshold |
-| **Count Aggregate** | "Clienti con 5+ ordini" | Same but for orders |
-| **Exclusion** | "Prodotti mai ordinati" | Find primary records NOT present in secondary model |
-| **Exclusion** | "Fornitori senza acquisti" | Find suppliers with zero purchase orders |
+| `partners_with_count_invoices` | "Clienti con più di 10 fatture" | Count invoices per partner, filter by threshold |
+| `partners_with_count_orders` | "Clienti con 5+ ordini" | Count orders per partner, filter by threshold |
+| `products_without_orders` | "Prodotti mai ordinati" | Return products NOT in any sales order |
+| `suppliers_without_purchases` | "Fornitori senza acquisti" | Return suppliers NOT in any purchase order |
 
-### How Multi-Model Queries Work
+### How Pattern Matching Works
 
-```
-Input: "Clienti con più di 10 fatture"
-       ↓
-[MULTI-MODEL DETECTION]
-  Pattern: partners_with_count_invoices
-  Primary model: res.partner
-  Secondary model: account.move
-  Operation: count_aggregate
-  Threshold: 10
-       ↓
-[EXECUTION - Count Aggregate]
-  1. Search ALL account.move records
-     Result: [INV/1, INV/2, INV/3, ...]
-       ↓
-  2. Group by partner_id and count
-     Partner 1: 15 invoices ✓ (>= 10)
-     Partner 2: 3 invoices  ✗ (< 10)
-     Partner 3: 12 invoices ✓ (>= 10)
-       ↓
-  3. Return matching partners
-     Result: [Partner 1, Partner 3]
-       ↓
-Output: List of partners with 10+ invoices
+Each pattern has:
+- **`pattern`** (regex): Matches the user's natural language query
+- **`primary_model`**: Model to return results from
+- **`secondary_model`**: Model to aggregate/filter from
+- **`operation`**: Either `count_aggregate` or `exclusion`
+- **`aggregate_field`**: Field linking secondary → primary
+
+Example configuration:
+```python
+'partners_with_count_invoices': {
+    'pattern': r'(partner|client|customer).*?(con|with|have)\s*(?:più di|at least|>)?\s*(\d+)\s*(fatture|invoices)',
+    'primary_model': 'res.partner',
+    'secondary_model': 'account.move',
+    'operation': 'count_aggregate',
+    'aggregate_field': 'partner_id',
+    'link_field': 'partner_id',
+}
 ```
 
-### Adding New Multi-Model Patterns
+### Adding Custom Patterns
 
 To add a new pattern, edit `MULTI_MODEL_PATTERNS` in `models/search_query.py`:
 
@@ -413,14 +271,6 @@ To add a new pattern, edit `MULTI_MODEL_PATTERNS` in `models/search_query.py`:
     'link_field': 'partner_id',
 }
 ```
-
-**Pattern fields:**
-- `pattern` (regex): Matches the natural language query
-- `primary_model`: Model to return results from
-- `secondary_model`: Model to aggregate/filter from
-- `operation`: Either `count_aggregate` or `exclusion`
-- `aggregate_field`: Field in secondary model linking to primary
-- `link_field`: Field to use for linking
 
 ---
 
@@ -521,7 +371,7 @@ Returns an HTML page with two tables:
 
 ### Problem: Empty Results `[]`
 
-When your query returns `[]` (no results), it usually means the LLM didn't generate a valid domain.
+When your query returns no results, usually the LLM didn't generate a valid domain.
 
 **Debug Steps:**
 
@@ -563,7 +413,6 @@ The LLM tried to use a computed field (like `lst_price` instead of `list_price`)
 4. **For price queries**, always verify you're using the right category:
    - Use "**Prodotti**" category for price searches
    - This auto-selects `product.template` which has prices
-   - Don't use "Product Variant" category for price searches
 
 ### Problem: "OpenAI API key not configured"
 
@@ -596,10 +445,7 @@ Network issue or API down.
 
 You've made too many API calls too quickly.
 
-**Solution**: Wait a few minutes and try again. Consider:
-- Using specific category selections instead of broad searches
-- Breaking complex queries into multiple smaller searches
-- Checking OpenAI pricing to understand your quota
+**Solution**: Wait a few minutes and try again.
 
 ---
 
@@ -633,17 +479,6 @@ Total stored fields: 50
   [... and more ...]
 ```
 
-### Checking Prompt Construction
-
-The prompt sent to GPT-4 includes:
-1. Model description
-2. List of all available stored fields (max 50)
-3. Model-specific examples
-4. Detailed rules for domain generation
-5. Your query
-
-To verify the prompt is correct, check the logs with filter `[LLM]`.
-
 ### Understanding Log Prefixes
 
 ```
@@ -654,6 +489,7 @@ To verify the prompt is correct, check the logs with filter `[LLM]`.
 [FIX]    - Auto-fixing field names (e.g., price fields)
 [CHECK]  - Verifying model is installed
 [SELECT] - Category → Model selection
+[MULTI-MODEL] - Multi-model pattern detection and execution
 [ERROR]  - Something went wrong
 ```
 
@@ -675,6 +511,7 @@ Stores each natural language query and its results.
 | `results_count` | Integer | Number of results returned |
 | `status` | Selection | draft / success / error |
 | `error_message` | Text | Error description if status=error |
+| `is_multi_model` | Boolean | True if multi-model pattern was detected |
 | `result_ids` | One2many | Linked search.result records |
 | `created_by_user` | Many2one | User who created the query |
 
@@ -706,11 +543,11 @@ Two access levels are implemented (see `security/ir.model.access.csv`):
 
 - **Max 50 results per query** (configurable in code)
 - **Only standard Odoo models** supported (custom models need manual configuration)
-- **Requires paid OpenAI API** (GPT-4 is not free, but cheap ~0.03¢ per query - multi-model queries don't use API)
-- **Multi-model JOINs** (supported! Limited to two-table correlations via pattern matching)
+- **Requires paid OpenAI API** for simple queries (GPT-4; ~0.03¢ per query - multi-model queries don't use API)
+- **Multi-model queries**: Limited to two-table correlations
 - **Language**: Italian/English (easily extended to other languages)
-- **LLM Hallucinations**: Occasionally generates slightly wrong domains (we auto-fix common ones)
-- **Multi-model scalability**: Works efficiently up to ~100k records per table (after that, use raw SQL with caching)
+- **LLM Hallucinations**: Occasionally generates slightly wrong domains (auto-fixed for common cases)
+- **Multi-model scalability**: Works efficiently up to ~100k records per table
 
 ---
 
@@ -725,11 +562,12 @@ ai-odoo-data-assistant/
 │       │
 │       ├── models/
 │       │   ├── __init__.py
-│       │   └── search_query.py    # Core business logic
-│       │                           # - SearchQuery model
-│       │                           # - SearchResult model
-│       │                           # - LLM integration
-│       │                           # - Domain parsing & validation
+│       │   ├── search_query.py    # Core business logic
+│       │   │                       # - SearchQuery model
+│       │   │                       # - Multi-model pattern matching
+│       │   │                       # - LLM integration
+│       │   │                       # - Domain parsing & validation
+│       │   └── sql_generator.py    # (Optional) SQL generation for complex queries
 │       │
 │       ├── controllers/
 │       │   ├── __init__.py
@@ -746,20 +584,19 @@ ai-odoo-data-assistant/
 │       │   └── ir.model.access.csv   # User/Manager permissions
 │       │
 │       ├── utils.py                  # Helper functions
-│       │                             # - API key setup
+│       │                             # - API key management
 │       │                             # - Field extraction for LLM
 │       │                             # - Result parsing
-│       │                             # - Domain validation
 │       │
 │       ├── debug_fields.py           # Shell script for field inspection
 │       ├── requirements.txt          # Python dependencies (openai)
-│       ├── config_example.py         # Configuration template
 │       ├── .env.example              # Environment variables template
+│       ├── DEVELOPMENT.md            # Developer guide
 │       └── README.md                 # Module-specific documentation
 │
 ├── docker-compose.yml               # Docker setup
 ├── odoo.conf                        # Odoo configuration
-├── CLAUDE.md                        # Development notes & improvements log
+├── CLAUDE.md                        # Development notes
 └── README.md                        # This file
 ```
 
@@ -771,21 +608,18 @@ ai-odoo-data-assistant/
 
 **Main methods:**
 
-- `action_execute_search()` - Entry point for search execution
+- `action_execute_search()` - Entry point; detects single vs multi-model query
+- `_detect_multi_model_query()` - Checks if query matches a multi-model pattern
+- `_execute_multi_model_search()` - Routes to count_aggregate or exclusion
+- `_execute_count_aggregate()` - Counts related records with threshold filtering
+- `_execute_exclusion()` - Returns primary records NOT in secondary model
+- `_execute_single_model_search()` - GPT-4 based simple query execution
 - `_parse_natural_language()` - Calls OpenAI GPT-4 API
 - `_build_prompt()` - Constructs detailed LLM prompt with field information
 - `_parse_domain_response()` - Extracts domain from LLM response
 - `_validate_domain_fields()` - Checks all fields exist in model
 - `_fix_price_fields()` - Auto-fixes common price field mistakes
 - `_get_model_examples()` - Model-specific query examples for LLM
-- `_attempt_domain_repair()` - Tries to fix syntax errors in response
-
-**Field mappings:**
-- `category` (Selection) → Automatically selects model via CATEGORY_MODELS dict
-- `model_name` (Selection) → Specific Odoo model to search
-- `model_domain` (Text) → Generated domain stored as string
-- `raw_response` (Text) → Full OpenAI response (for debugging)
-- `status` (Selection) → draft / success / error
 
 ### SearchController (controllers/search_controller.py)
 
@@ -795,156 +629,39 @@ ai-odoo-data-assistant/
 - `GET /ovunque/models` - List available categories & models
 - `GET /ovunque/debug-fields` - HTML field inspector for debugging
 
-### Utility Functions (utils.py)
+---
 
-- `setup_api_key()` - Configure OpenAI key in database
-- `get_model_fields_for_llm()` - Extract fields for prompt building
-- `parse_search_results()` - Convert recordset to API response format
-- `validate_domain()` - Verify domain structure
-- `common_search_patterns()` - Example queries by model
+## Performance
+
+### Simple Queries (Single-Model)
+- **Speed**: ~1-2 seconds (limited by OpenAI API)
+- **Cost**: ~0.03¢ per query
+- **Scalability**: Works with up to ~100k records
+
+### Multi-Model Queries
+- **Speed**: Instant (~100-500ms)
+- **Cost**: Free (no API calls)
+- **Scalability**: Works with up to ~100k records per table
 
 ---
 
-## Development Notes
+## Security
 
-### Adding Support for a New Model
-
-1. Add model to `AVAILABLE_MODELS` in `SearchQuery` class
-2. Add category mapping in `CATEGORY_MODELS` dictionary
-3. Add model description in `_get_model_description()`
-4. Add examples in `_get_model_examples()`
-5. Add to `AVAILABLE_MODELS` list in `debug_fields.py`
-6. Test with `/ovunque/debug-fields?model=your.model`
-
-### Adding New Multi-Model Query Patterns
-
-Multi-model queries use pattern matching to detect complex queries automatically.
-
-**Step 1**: Identify your pattern
-```
-User query: "Clienti con più di 10 fatture"
-Primary model: res.partner (what we return)
-Secondary model: account.move (what we count/filter)
-Operation: count_aggregate (count invoices per customer)
-Threshold: 10 (from the number in the query)
-```
-
-**Step 2**: Create a regex pattern and add to `MULTI_MODEL_PATTERNS`
-```python
-'partners_with_count_invoices': {
-    'pattern': r'(clienti|partner).*?(?:con|with).*?(\d+)\s*(?:fatture|invoice)',
-    'primary_model': 'res.partner',
-    'secondary_model': 'account.move',
-    'operation': 'count_aggregate',
-    'aggregate_field': 'partner_id',
-    'link_field': 'partner_id',
-}
-```
-
-**Step 3**: Test your regex with the user's expected queries
-
-**Step 4**: The system auto-detects and executes:
-- `count_aggregate`: Groups secondary model by primary, filters by count
-- `exclusion`: Returns primary records NOT in secondary model
-- Custom: Add your own operation type with matching method `_execute_custom_operation()`
-
-### Extending to Other Languages
-
-1. The prompt in `_build_prompt()` can be translated
-2. Update example queries in `_get_model_examples()` 
-3. Update multi-model patterns in `MULTI_MODEL_PATTERNS` with translated keywords
-4. The UI translations go in views XML files
-5. Add language-specific prompt templates
-
-### Integrating Other LLMs
-
-To use Claude, Ollama, or other LLMs instead of GPT-4:
-
-1. Replace OpenAI client in `_parse_natural_language()`
-2. Adjust system message and parameters for your LLM
-3. Update imports and API key retrieval
-4. Test with your LLM's temperature/token settings
-
-**Note**: Multi-model queries don't use LLM - they use pure pattern matching for reliability.
+✅ **Odoo RLS Respected**: All searches use ORM, not raw SQL
+✅ **No SQL Injection**: Domain validation prevents malicious input
+✅ **Field Access Control**: Only searchable stored fields allowed
+✅ **Auditable**: Every query logged with results
+✅ **User-Scoped**: Queries stored per user
 
 ---
 
-## Performance & Costs
+## Version History
 
-### API Costs (Approximate)
-
-GPT-4 pricing varies, but typically:
-- **~0.01¢ - 0.05¢ per query** depending on complexity
-- **1000 queries ≈ $0.50 - $2.00**
-
-To minimize costs:
-- Cache repeated searches locally
-- Batch simple queries together
-- Use specific categories to reduce token usage
-
-### Response Time
-
-- **Average**: 2-3 seconds
-- **Fast queries**: 1-2 seconds
-- **Complex queries**: 3-5 seconds
-
-Mostly depends on OpenAI API load and network latency.
+- **v19.0.2.0.0** - Multi-model pattern matching, improved docs
+- **v19.0.1.0.0** - Initial release with GPT-4 integration
 
 ---
 
-## Contributing
+## Support & Contributing
 
-Contributions are welcome! Areas for improvement:
-
-- [ ] Add support for more models
-- [ ] Improve LLM prompt engineering
-- [ ] Add caching layer for repeated queries
-- [ ] Create UI wizard for complex multi-model searches
-- [ ] Add query suggestion/autocomplete
-- [ ] Support for more LLMs (Claude, Ollama, local models)
-- [ ] Better error messages in Italian
-- [ ] Query history and favorites
-
----
-
-## License
-
-AGPL-3.0
-
----
-
-## Support & Documentation
-
-- **Module README**: `addons/ovunque/README.md`
-- **Development Guide**: `addons/ovunque/DEVELOPMENT.md`
-- **Multi-Model Patterns**: `addons/ovunque/MULTI_MODEL_PATTERNS.md` - Detailed guide for cross-model queries
-- **Test Scripts**: `addons/ovunque/test_multi_model.py` - Test multi-model functionality
-- **Debug Guide**: `CLAUDE.md`
-- **Issues**: Check the repository issues tracker
-- **API Examples**: See controllers/search_controller.py for endpoint details
-
----
-
-## Changelog
-
-### v19.0.2.0.0 (Latest)
-
-**Multi-Model Queries Feature**
-- ✅ **NEW**: Support for complex cross-model queries
-- ✅ **NEW**: Pattern-based detection for "clients with N invoices" queries
-- ✅ **NEW**: Count aggregation (find records with N+ related items)
-- ✅ **NEW**: Exclusion queries (find records NOT in another model)
-- ✅ **NEW**: Extendable pattern system for custom queries
-- ✅ Enhanced logging with `[MULTI-MODEL]`, `[MULTI-MODEL-AGG]`, `[MULTI-MODEL-EXC]` prefixes
-- ✅ Updated documentation with multi-model examples
-
-### v19.0.1.0.0
-
-- ✅ Initial release with GPT-4 integration
-- ✅ Support for 9 major Odoo models
-- ✅ Auto-fix for price field confusion
-- ✅ Detailed error messages with suggestions
-- ✅ Debug tools for field inspection
-- ✅ Full API documentation
-- ✅ Docker support
-- ✅ Comprehensive code comments
+For issues, questions, or contributions, see the development guide in `addons/ovunque/DEVELOPMENT.md`.
