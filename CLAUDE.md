@@ -1,17 +1,161 @@
-# Miglioramenti Domain Generation - Debug Guide
+# Intelligent Query Format Detection - Debug Guide
 
-## ULTIMO UPDATE (v3)
-L'interfaccia è stata redesignata per essere **user-friendly**:
+## ULTIMO UPDATE (v5) - Structured Query Format (SQF)
+L'architettura è stata riprogettata per essere **intelligente e sicura**:
 - ✅ Seleziona categoria (Clienti, Prodotti, Ordini, ecc.)
-- ✅ Il modello Odoo viene auto-selezionato dal backend
-- ✅ Scrivi la query in linguaggio naturale
+- ✅ Scrivi query in linguaggio naturale
+- 🆕 **LLM intelligente**: Decide se serve domain o JSON strutturato
+- 🆕 **Zero SQL**: Usa Python + Odoo ORM, mai SQL raw
+- 🆕 **Multi-model nativo**: Supporta aggregazioni, exclusioni, conteggi senza SQL
 
-## Problema Originale (Risolto)
-Le query spesso ritornano dominio vuoto `[]` perché la LLM non generava risposte valide.
+## Il Problema: Domain Limitations
+
+Odoo domains non possono esprimere:
+```python
+# Query: "Clienti con più di 3 fatture"
+# Impossibile in domain:
+[('invoices_count', '>', 3)]  ← invoices_count non esiste!
+# Domain supporta solo filtri semplici
+```
+
+## La Soluzione: Structured Query Format
+
+Invece di forcing la LLM a generare un dominio impossibile, la LLM genera **JSON strutturato** quando serve:
+
+```
+Query: "Clienti con più di 3 fatture"
+       ↓
+LLM decide: "Questo serve COUNT! Non è un dominio semplice"
+       ↓
+LLM risponde:
+{
+  "query_type": "count_aggregate",
+  "primary_model": "res.partner",
+  "secondary_model": "account.move",
+  "link_field": "partner_id",
+  "threshold": 3,
+  "comparison": ">="
+}
+       ↓
+Sistema: "Ho riconosciuto JSON con query_type!"
+       ↓
+Esegui _execute_count_aggregate_from_spec()
+```
+
+## Come Funziona
+
+**File principali**:
+- `models/search_query.py`:
+  - `_parse_natural_language()`: Comunica con LLM (domain o JSON)
+  - `_parse_query_response()`: 🆕 Rileva formato (JSON vs domain)
+  - `_execute_structured_query()`: 🆕 Esegue query strutturate
+  - `_execute_count_aggregate_from_spec()`: 🆕 Logica aggregazione Python
+  - `_execute_exclusion_from_spec()`: 🆕 Logica esclusione Python
+
+**Niente SQL Generator**: Non serve più `sql_generator.py` (opzionale per future extensions)
+
+## Flusso di Esecuzione
+
+```
+1. [LLM] Riceve prompt con decision tree
+   "Questa query serve multi-model logic? Rispondi JSON o domain"
+
+2. [PARSE-JSON] Tenta parsing JSON
+   Se valido E ha query_type → Query strutturata ✓
+   Altrimenti → Tenta domain parsing
+
+3. [PARSE-DOMAIN] Tenta parsing domain
+   Estrae [('field', 'op', 'value')]
+
+4. [STRUCTURED-EXEC] Se è strutturata:
+   - Chiama _execute_count_aggregate_from_spec()
+   - O _execute_exclusion_from_spec()
+   - Ritorna risultati
+
+5. Oppure esecuzione domain normale
+```
+
+## Query Types Supportati
+
+### Count Aggregation
+```json
+{
+  "query_type": "count_aggregate",
+  "primary_model": "res.partner",
+  "secondary_model": "account.move",
+  "link_field": "partner_id",
+  "threshold": 3,
+  "comparison": ">="
+}
+```
+
+**Cosa fa**: Conta record di `secondary_model` per ogni `primary_model`, ritorna quelli con count `>= threshold`
+
+**Esempi**:
+- "Clienti con più di 3 fatture" → count >= 3
+- "Partner con almeno 5 ordini" → count >= 5
+- "Fornitori con meno di 2 acquisti" → count < 2
+
+### Exclusion
+```json
+{
+  "query_type": "exclusion",
+  "primary_model": "product.template",
+  "secondary_model": "sale.order",
+  "link_field": "product_id"
+}
+```
+
+**Cosa fa**: Ritorna `primary_model` records che NON appaiono in `secondary_model`
+
+**Esempi**:
+- "Prodotti mai ordinati" → product.template NOT IN sale.order
+- "Fornitori senza acquisti" → res.partner NOT IN purchase.order
+
+## Monitoraggio e Debug
+
+### Log Prefix
+```
+[PARSE-JSON]      → Tentativo parsing JSON
+[PARSE-DOMAIN]    → Fallback domain parsing
+[STRUCTURED-EXEC] → Esecuzione query strutturata
+[STRUCTURED-AGG]  → Fase count aggregation
+[STRUCTURED-EXC]  → Fase exclusion
+```
+
+**Vedere i log**:
+```bash
+tail -f /var/log/odoo/odoo.log | grep "PARSE-\|STRUCTURED"
+```
+
+### Campi tracciati in search.query
+
+```
+query_type = Selection(['simple_domain', 'count_aggregate', 'exclusion'])
+query_spec = Text(JSON strutturato)
+is_multi_model = Boolean(True se query tipo count_aggregate o exclusion)
+used_sql_fallback = Boolean(Future: Reserved per SQL fallback generation)
+```
+
+### Testare una query
+
+1. Vai a Ovunque → Query Search
+2. Scrivi: "Clienti con più di 3 fatture"
+3. Esegui
+4. Scorri a "Query Type" → Vedi "Count Aggregation"
+5. Scorri a "Query Specification (JSON)" → Vedi il JSON
+
+## Sicurezza
+
+✅ **Zero SQL injection**: Nessun SQL raw  
+✅ **Odoo RLS**: Usa sempre ORM, tutte le security rules applicate  
+✅ **Auditable**: Ogni azione è loggata da Odoo  
+✅ **Validabile**: JSON spec è facilmente inspecionabile  
+✅ **Python only**: Codice Python puro, no template SQL
 
 ## Soluzioni Implementate
 
-### 1. **Prompt Migliorato** (search_query.py:111-148)
+### 1. **Prompt Migliorato** (search_query.py)
 - Aggiunto descrizione del modello con `_get_model_description()`
 - Aggiunto esempi specifici per ogni modello con `_get_model_examples()`
 - Aumentati campi da 20 a 50 in `_get_field_info()`
@@ -45,8 +189,64 @@ Se vedi:
 ### Passo 3: Verificare il prompt
 Nel log (setting "SQL_DEBUG"), cerca `[LLM] Prompt length:` per vedere se è stato costruito correttamente.
 
-## Test
-Esempi di query che dovrebbero funzionare ora:
+## Test SQL Fallback
+
+### Query che attivano SQL (Domain-only fallback)
+
+Queste query non funzionano col dominio puro, attivano SQL:
+
+**Aggregazioni (COUNT)**:
+```
+"Clienti con più di 10 fatture"
+"Partner con 5+ ordini"
+"Fornitori con meno di 3 acquisti"
+```
+
+**Range queries**:
+```
+"Prodotti ordinati tra 5 e 20 volte"
+"Clienti con fatture tra 1000 e 5000 euro"
+```
+
+**Temporal logic**:
+```
+"Fornitori attivi negli ultimi 6 mesi"
+"Clienti non contattati da 1 anno"
+```
+
+### Come verificare SQL in produzione
+
+1. **Seleziona una query dal log**:
+   ```bash
+   grep "Domain returned empty results" /var/log/odoo/odoo.log | tail -1
+   ```
+
+2. **Vai nella query in Odoo**:
+   - Ovunque → Query Search
+   - Clicca sulla query
+   - Scroll down a "Generated SQL Query"
+   - Vedi il SQL generato
+
+3. **Esegui SQL direttamente (per debug)**:
+   ```sql
+   -- Accedi al DB Odoo
+   psql -d odoo_db
+   
+   -- Copia il SQL generato e esegui
+   SELECT DISTINCT partner_id 
+   FROM account_move 
+   GROUP BY partner_id 
+   HAVING COUNT(*) >= 10;
+   ```
+
+4. **Verifica i risultati**:
+   - Se SQL ritorna ID: ✓ Fallback ha funzionato
+   - Se SQL è vuoto: ⚠️ LLM ha generato query sbagliata
+   - Se SQL ha errore: ❌ Validation ha fallito
+
+## Test Domain-based Queries
+
+Esempi di query che dovrebbero funzionare col dominio:
 
 ### res.partner
 - "Clienti"

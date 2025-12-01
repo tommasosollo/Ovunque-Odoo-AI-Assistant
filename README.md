@@ -220,6 +220,129 @@ How it works: The system detects multi-model patterns, queries both tables, and 
 
 ---
 
+## Intelligent Query Format Detection
+
+### The Problem Solved
+
+Traditional approach: **LLM generates Odoo domains**
+- ✗ Domains can't express: "Clients with 10+ invoices"
+- ✗ Domains can't do: exclusion, aggregation, multi-model joins
+- ✓ But domains ARE: simple, secure, predictable
+
+### The Solution: Structured Query Format (SQF)
+
+Ovunque uses **intelligent format detection**. The LLM now decides:
+
+```
+Query → LLM analyzes complexity
+         ↓
+    Is this SIMPLE? (filter, search)
+         ↓ YES
+    Return DOMAIN: [('field', '=', 'value')]
+         ↓
+    Is this COMPLEX? (count, aggregation, exclusion)
+         ↓ YES
+    Return JSON SPEC: {"query_type": "count_aggregate", ...}
+         ↓
+    System executes appropriate method (no SQL!)
+```
+
+### Architecture
+
+| Query Type | Detection | Execution | Security |
+|-----------|-----------|-----------|----------|
+| **Simple** | Regex + LLM | Odoo Domain | ✅ ORM validates |
+| **Aggregate** | LLM (JSON) | Pure Python + ORM | ✅ Full Odoo RLS |
+| **Exclusion** | LLM (JSON) | Pure Python + ORM | ✅ Full Odoo RLS |
+
+### Structured Query Types
+
+**1. Count Aggregation**
+```json
+{
+  "query_type": "count_aggregate",
+  "primary_model": "res.partner",
+  "secondary_model": "account.move",
+  "link_field": "partner_id",
+  "threshold": 10,
+  "comparison": ">="
+}
+```
+Use for: "Clients with 10+ invoices", "Partners with at least 5 orders"
+
+**2. Exclusion**
+```json
+{
+  "query_type": "exclusion",
+  "primary_model": "product.template",
+  "secondary_model": "sale.order",
+  "link_field": "product_id"
+}
+```
+Use for: "Products never ordered", "Suppliers with no purchases"
+
+### How the LLM Decides
+
+The system prompts the LLM:
+
+```
+"Analyze this query. Does it need multi-model logic?
+- YES (counting, aggregation) → Respond with JSON
+- NO (simple filter) → Respond with domain list"
+
+Query: "Clients with more than 3 invoices"
+↓
+LLM recognizes: needs to COUNT invoices per client
+↓
+Responds: {"query_type": "count_aggregate", ...}
+```
+
+### Advantages vs Pure SQL
+
+✅ **Safer**: Uses Odoo ORM, not raw SQL
+✅ **Auditable**: Full Odoo record logging
+✅ **Compliant**: Respects all security rules (RLS, field access)
+✅ **Maintainable**: Python, not hardcoded SQL
+✅ **Scalable**: Add new query_types without changing LLM
+
+### Example: "Clients with 3+ fatture"
+
+**Flow**:
+1. LLM receives prompt with decision tree
+2. LLM recognizes: "3+ fatture" = count aggregation
+3. LLM returns JSON spec (not domain)
+4. System parses JSON → calls `_execute_count_aggregate_from_spec()`
+5. Pure Python counts invoices per partner
+6. Returns partners with >= 3 invoices
+
+**Debugging**:
+
+View query spec:
+- Go to Ovunque → Query Search → Click query
+- See "Query Type" field (simple_domain, count_aggregate, exclusion)
+- See "Query Specification (JSON)" field with full spec
+
+Check logs:
+```bash
+tail -f /var/log/odoo/odoo.log | grep "[PARSE-\|STRUCTURED\|LLM]"
+```
+
+Log phases:
+- `[LLM]` - OpenAI communication phase
+- `[PARSE-JSON]` - LLM response JSON parsing
+- `[PARSE-DOMAIN]` - Fallback to domain parsing
+- `[STRUCTURED-EXEC]` - Query execution
+- `[STRUCTURED-AGG]` - Count aggregation phase
+- `[STRUCTURED-EXC]` - Exclusion filter phase
+
+**Tracked Fields** in search.query form:
+- `query_type` - Query classification (simple_domain, count_aggregate, exclusion)
+- `query_spec` - Full JSON specification for structured queries
+- `is_multi_model` - Boolean flag for complex multi-model queries
+- `used_sql_fallback` - Reserved for future SQL fallback (always False in v2.0)
+
+---
+
 ## Multi-Model Queries (Advanced Feature)
 
 ### What Are Multi-Model Queries?

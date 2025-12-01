@@ -1,5 +1,5 @@
-import json
 import logging
+import json
 import re
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
@@ -20,15 +20,20 @@ class SearchQuery(models.Model):
     This model represents a single user query written in natural language.
     The model:
     1. Accepts user input in Italian/English (e.g., "unpaid invoices")
-    2. Uses OpenAI GPT-4 to convert the query to an Odoo domain
-    3. Executes the domain search on the selected model
-    4. Stores results for user review
+    2. Uses OpenAI GPT-4 to convert the query to an Odoo domain or structured JSON spec
+    3. Detects query type: simple domain vs. complex multi-model (count_aggregate, exclusion)
+    4. Executes the appropriate search method (domain, structured aggregation, etc.)
+    5. Stores results and execution metadata for user review and debugging
     
     Key Methods:
     - action_execute_search(): Main entry point for processing queries
-    - _parse_natural_language(): Communicates with OpenAI API
-    - _build_prompt(): Constructs detailed prompt with model information
-    - _parse_domain_response(): Extracts and validates the domain from LLM response
+    - _execute_single_model_search(): Handles both simple and structured queries
+    - _parse_natural_language(): Communicates with OpenAI API for query parsing
+    - _parse_query_response(): Intelligently detects response format (JSON vs domain)
+    - _execute_structured_query(): Routes to count_aggregate or exclusion execution
+    - _execute_count_aggregate_from_spec(): Counts related records with threshold filtering
+    - _execute_exclusion_from_spec(): Finds records NOT present in related model
+    - _build_prompt(): Constructs detailed prompt with model info and examples
     """
     _name = 'search.query'
     _description = 'Natural Language Search Query'
@@ -67,50 +72,13 @@ class SearchQuery(models.Model):
         'projects': ['project.task'],
     }
     
-    # Multi-model query patterns with regex and execution logic
-    # These patterns detect when a query needs multiple models to be answered
-    MULTI_MODEL_PATTERNS = {
-        'partners_with_count_invoices': {
-            'pattern': r'(clienti|partner|cliente|customer|fornitore|supplier).*?(?:con|that have|with).*?(\d+)\s*(?:fatture|invoice|document)',
-            'primary_model': 'res.partner',
-            'secondary_model': 'account.move',
-            'operation': 'count_aggregate',
-            'aggregate_field': 'partner_id',
-            'count_comparison': 'greater_than',
-            'link_field': 'partner_id',
-        },
-        'partners_with_orders': {
-            'pattern': r'(clienti|partner|customer|cliente).*?(?:con|with|that have).*?(\d+)\s*(?:ordini|order)',
-            'primary_model': 'res.partner',
-            'secondary_model': 'sale.order',
-            'operation': 'count_aggregate',
-            'aggregate_field': 'partner_id',
-            'count_comparison': 'greater_than',
-            'link_field': 'partner_id',
-        },
-        'products_without_orders': {
-            'pattern': r'(prodotti|product).*?(?:senza|without|mai|never).*?(?:ordini|order)',
-            'primary_model': 'product.template',
-            'secondary_model': 'sale.order',
-            'operation': 'exclusion',
-            'aggregate_field': 'product_id',
-            'link_field': 'product_id',
-        },
-        'suppliers_without_purchases': {
-            'pattern': r'(fornitore|supplier).*?(?:senza|without).*?(?:ordini|order|acquisti)',
-            'primary_model': 'res.partner',
-            'secondary_model': 'purchase.order',
-            'operation': 'exclusion',
-            'aggregate_field': 'partner_id',
-            'link_field': 'partner_id',
-        },
-    }
-
     # The natural language query text entered by the user (e.g., "unpaid invoices over 1000")
+    # Can be in Italian, English, or mixed
     name = fields.Char('Query Text', required=True)
     
     # User-friendly category selection (Clienti, Prodotti, etc.)
     # Based on this, the system auto-selects the appropriate Odoo model from CATEGORY_MODELS
+    # Categories map to business domains to guide the LLM
     category = fields.Selection([
         ('customers', 'Clienti / Contatti'),
         ('products', 'Prodotti'),
@@ -122,24 +90,31 @@ class SearchQuery(models.Model):
     
     # Specific Odoo model selected after category is processed (res.partner, account.move, etc.)
     # Set automatically by action_execute_search() based on the category
+    # Used for field introspection and ORM operations
     model_name = fields.Selection(AVAILABLE_MODELS, 'Modello Specifico', readonly=True)
     
     # Generated Odoo domain as a string (e.g., "[('state', '=', 'draft')]")
-    # Produced by GPT-4 and stored for debugging/auditing purposes
+    # For simple queries: produced by GPT-4 domain parsing
+    # For structured queries: represents the final filtered IDs as a domain comment
+    # Stored for debugging, auditing, and query reproducibility
     model_domain = fields.Text('Generated Domain')
     
-    # Count of results returned by the search query
+    # Count of results returned by the search query execution
+    # Updated after search is executed
     results_count = fields.Integer('Results Count')
     
     # Raw response text from OpenAI API (stored for debugging)
-    # Helpful for troubleshooting when the LLM doesn't generate valid domains
+    # Contains either a Odoo domain list or JSON structured query spec
+    # Helpful for troubleshooting when the LLM doesn't generate valid queries
     raw_response = fields.Text('Raw LLM Response')
     
     # One2many relationship to SearchResult records
-    # Contains all the records found by the search domain
+    # Contains all the records found by the search domain or structured query
+    # Records are linked via query_id in the search.result model
     result_ids = fields.One2many('search.result', 'query_id', 'Results')
     
     # Status of the query: 'draft' = initial, 'success' = completed, 'error' = failed
+    # Updated after action_execute_search() is called
     status = fields.Selection([
         ('draft', 'Draft'),
         ('success', 'Success'),
@@ -147,13 +122,43 @@ class SearchQuery(models.Model):
     ], default='draft')
     
     # Error message in case of failures (API key missing, invalid domain, etc.)
+    # Populated only when status = 'error'
     error_message = fields.Text('Error Message')
     
     # Reference to the user who created this query
+    # Set automatically when query is created
     created_by_user = fields.Many2one('res.users', 'Created By', default=lambda self: self.env.user)
     
-    # Flag indicating if this is a multi-model query (searches across multiple models)
-    is_multi_model = fields.Boolean('Is Multi-Model Query', default=False, readonly=True)
+    # Flag indicating if this is a structured/complex query (count_aggregate, exclusion)
+    # Set to True when LLM recognizes a multi-model or aggregation query
+    # Used for filtering and user awareness of query complexity
+    is_multi_model = fields.Boolean('Is Structured Query', default=False, readonly=True)
+    
+    # Query type classification: determines execution method
+    # - simple_domain: Standard Odoo domain filter, executes via Model.search()
+    # - count_aggregate: Count-based filter across related records
+    # - exclusion: Inverse filter (records NOT present in related model)
+    # Set by _parse_query_response() based on LLM response parsing
+    query_type = fields.Selection([
+        ('simple_domain', 'Simple Domain Filter'),
+        ('count_aggregate', 'Count Aggregation'),
+        ('exclusion', 'Exclusion Filter'),
+    ], 'Query Type', readonly=True, default='simple_domain')
+    
+    # Structured query specification in JSON format
+    # Only populated for complex queries (count_aggregate, exclusion)
+    # Contains metadata like:
+    #   - primary_model: The model whose records are returned
+    #   - secondary_model: The model used for filtering/counting
+    #   - link_field: Field that links primary to secondary
+    #   - threshold: (count_aggregate) minimum/maximum count
+    #   - comparison: (count_aggregate) '>=', '>', '<=', '<', '='
+    query_spec = fields.Text('Query Specification (JSON)', readonly=True)
+    
+    # Flag indicating if SQL fallback was used instead of Odoo domain
+    # Future feature: reserved for potential SQL generation when domain is insufficient
+    # Currently always False (not used in v2.0, reserved for future extensions)
+    used_sql_fallback = fields.Boolean('Used SQL Fallback', default=False, readonly=True)
 
     def action_execute_search(self):
         """
@@ -161,11 +166,10 @@ class SearchQuery(models.Model):
         
         Flow:
         1. Delete any previous results for this query
-        2. Check if this is a multi-model query (e.g., "clients with 10+ invoices")
-        3. If multi-model: execute complex cross-model logic
-           Else: proceed with standard single-model search
-        4. Validate category/model selection
-        5. Parse natural language to Odoo domain using LLM
+        2. Validate category/model selection
+        3. Parse natural language to Odoo domain or structured query using LLM
+        4. Detect query type: simple domain vs. structured (count_aggregate, exclusion)
+        5. Set is_multi_model flag appropriately
         6. Execute the search
         7. Store results in search.result records
         8. Update status (success/error) and error messages
@@ -173,18 +177,7 @@ class SearchQuery(models.Model):
         for record in self:
             try:
                 record.result_ids.unlink()
-                
-                # Check if this is a multi-model query
-                multi_model_pattern = record._detect_multi_model_query()
-                
-                if multi_model_pattern:
-                    _logger.warning(f"[MULTI-MODEL] Detected pattern: {multi_model_pattern['pattern_key']}")
-                    record.is_multi_model = True
-                    record._execute_multi_model_search(multi_model_pattern)
-                else:
-                    # Standard single-model search
-                    record.is_multi_model = False
-                    record._execute_single_model_search()
+                record._execute_single_model_search()
                     
             except Exception as e:
                 record.status = 'error'
@@ -192,7 +185,16 @@ class SearchQuery(models.Model):
                 _logger.error(f"Error executing search: {e}")
     
     def _execute_single_model_search(self):
-        """Execute a standard single-model search (existing logic)."""
+        """
+        Execute a standard single-model search with automatic SQL fallback.
+        
+        Flow:
+        1. Validate category and select model
+        2. Try generating Odoo domain from natural language
+        3. If domain is empty or invalid, detect if SQL is needed
+        4. If SQL is needed, generate and execute SQL query
+        5. Store results and execution metadata
+        """
         if not self.category:
             raise UserError(_('Please select a category (Clienti, Prodotti, etc.) before searching.'))
         
@@ -224,194 +226,161 @@ class SearchQuery(models.Model):
         self.model_name = valid_model
         _logger.warning(f"[SELECT] Category {self.category} → Model {valid_model}")
         
-        domain = self._parse_natural_language()
-        self.model_domain = str(domain)
-        self.status = 'success'
+        # Parse natural language to get either domain (list) or structured query (dict)
+        query_response = self._parse_natural_language()
         
-        Model = self.env[self.model_name]
-        results = Model.search(domain)
-        self.results_count = len(results)
-        
-        result_data = []
-        for res in results:
-            result_data.append((0, 0, {
-                'record_id': res.id,
-                'record_name': res.display_name,
-                'model': self.model_name,
-            }))
-        self.result_ids = result_data
-
-    def _detect_multi_model_query(self):
-        """
-        Detect if the query is a multi-model query that needs cross-model logic.
-        
-        Examples of multi-model queries:
-        - "Clienti con più di 10 fatture" → Need to count invoices per customer
-        - "Prodotti mai ordinati" → Need to check against orders table
-        
-        Returns:
-            dict: Pattern info if multi-model query detected, None otherwise
-                  Pattern includes: pattern_key, primary_model, secondary_model, operation, etc.
-        """
-        query_lower = self.name.lower()
-        _logger.warning(f"[MULTI-MODEL-DETECT] Checking query: '{self.name}'")
-        _logger.warning(f"[MULTI-MODEL-DETECT] Lowercase: '{query_lower}'")
-        
-        for pattern_key, pattern_config in self.MULTI_MODEL_PATTERNS.items():
-            regex_pattern = pattern_config['pattern']
-            _logger.warning(f"[MULTI-MODEL-DETECT] Testing pattern '{pattern_key}': {regex_pattern}")
+        # Check if response is structured query (dict with query_type) or simple domain (list)
+        if isinstance(query_response, dict) and 'query_type' in query_response:
+            _logger.warning(f"[STRUCTURED] Recognized query type: {query_response['query_type']}")
+            self.query_type = query_response['query_type']
+            self.query_spec = json.dumps(query_response)
+            self.is_multi_model = True
+            self._execute_structured_query(query_response)
+        else:
+            # Simple domain query
+            self.query_type = 'simple_domain'
+            self.is_multi_model = False
+            domain = query_response if isinstance(query_response, list) else []
+            self.model_domain = str(domain)
             
-            if re.search(regex_pattern, query_lower, re.IGNORECASE):
-                pattern_config['pattern_key'] = pattern_key
-                
-                # Extract the count value if present
-                match = re.search(r'(\d+)', query_lower)
-                if match:
-                    pattern_config['count_value'] = int(match.group(1))
-                else:
-                    pattern_config['count_value'] = 1
-                
-                if 'count_comparison' in pattern_config:
-                    has_piu = 'più di' in query_lower or 'more than' in query_lower
-                    has_almeno = 'almeno' in query_lower or 'at least' in query_lower
-                    has_con = re.search(r'con\s+\d+', query_lower)
-                    
-                    if has_piu:
-                        pattern_config['count_comparison'] = 'greater_than'
-                    elif has_almeno or (has_con and not has_piu):
-                        pattern_config['count_comparison'] = 'greater_equal'
-                    
-                    _logger.warning(f"[MULTI-MODEL-DETECT] Adjusted comparison to: {pattern_config['count_comparison']}")
-                
-                _logger.warning(f"[MULTI-MODEL-DETECT] ✓ Matched pattern '{pattern_key}' with count={pattern_config.get('count_value')}")
-                _logger.warning(f"[MULTI-MODEL-DETECT] Primary: {pattern_config['primary_model']}, Secondary: {pattern_config['secondary_model']}")
-                return pattern_config
-        
-        _logger.warning(f"[MULTI-MODEL-DETECT] No pattern matched")
-        return None
+            # Execute domain search
+            Model = self.env[self.model_name]
+            results = Model.search(domain)
+            self.results_count = len(results)
+            self.status = 'success'
+            
+            result_data = []
+            for res in results:
+                result_data.append((0, 0, {
+                    'record_id': res.id,
+                    'record_name': res.display_name,
+                    'model': self.model_name,
+                }))
+            self.result_ids = result_data
     
-    def _execute_multi_model_search(self, pattern_config):
+    def _execute_structured_query(self, query_spec):
         """
-        Execute a multi-model search using the detected pattern.
+        Execute a query from structured specification (JSON).
         
-        Logic:
-        1. Determine primary model (what we want to return)
-        2. Query secondary model with any filters
-        3. Aggregate/filter based on the operation
-        4. Return results from primary model
+        This method handles queries that the LLM identifies as needing aggregation,
+        counting, or exclusion logic. Instead of trying to express this in Odoo domain
+        syntax (which is impossible), the LLM responds with JSON metadata.
         
         Args:
-            pattern_config (dict): Pattern configuration from MULTI_MODEL_PATTERNS
+            query_spec (dict): Structured query specification with keys:
+                - query_type: 'count_aggregate' or 'exclusion'
+                - primary_model: Model to return results from
+                - secondary_model: Model to aggregate/filter from
+                - link_field: Field linking primary to secondary
+                - threshold: (for count_aggregate) minimum count
+                - comparison: (for count_aggregate) '>=' or other operator
+        
+        Examples:
+            {
+              'query_type': 'count_aggregate',
+              'primary_model': 'res.partner',
+              'secondary_model': 'account.move',
+              'link_field': 'partner_id',
+              'threshold': 10,
+              'comparison': '>='
+            }
         """
-        primary_model_name = pattern_config['primary_model']
-        secondary_model_name = pattern_config['secondary_model']
-        operation = pattern_config['operation']
-        
-        # Set the model names for tracking
-        self.model_name = primary_model_name
-        
         try:
-            PrimaryModel = self.env[primary_model_name]
-            SecondaryModel = self.env[secondary_model_name]
-        except KeyError as e:
-            raise UserError(_('Required model not installed: %s') % str(e))
-        
-        _logger.warning(f"[MULTI-MODEL] Executing {operation} on {primary_model_name} via {secondary_model_name}")
-        
-        if operation == 'count_aggregate':
-            self._execute_count_aggregate(
-                primary_model_name, secondary_model_name, 
-                pattern_config, PrimaryModel, SecondaryModel
-            )
-        elif operation == 'exclusion':
-            self._execute_exclusion(
-                primary_model_name, secondary_model_name,
-                pattern_config, PrimaryModel, SecondaryModel
-            )
-        else:
-            raise UserError(_('Unknown multi-model operation: %s') % operation)
-    
-    def _execute_count_aggregate(self, primary_model_name, secondary_model_name, 
-                                 pattern_config, PrimaryModel, SecondaryModel):
-        """
-        Execute count aggregation: find primary model records with N+ records in secondary model.
-        
-        Example: "Clients with 10+ invoices"
-        1. Search all secondary model records
-        2. Group by primary model reference field
-        3. Count per group
-        4. Filter groups with count >= threshold
-        5. Return primary model records
-        """
-        secondary_model = pattern_config['secondary_model']
-        aggregate_field = pattern_config['aggregate_field']
-        link_field = pattern_config['link_field']
-        count_value = pattern_config.get('count_value', 1)
-        
-        _logger.warning(f"[MULTI-MODEL-AGG] Counting {secondary_model} grouped by {aggregate_field}, threshold={count_value}")
-        _logger.warning(f"[MULTI-MODEL-AGG] Using link_field='{link_field}' from pattern config")
-        
-        # Search all records in secondary model
-        SecondaryModel = self.env[secondary_model]
-        secondary_records = SecondaryModel.search([])
-        _logger.warning(f"[MULTI-MODEL-AGG] Found {len(secondary_records)} records in {secondary_model}")
-        
-        # Count records per primary key
-        if not secondary_records:
-            _logger.warning(f"[MULTI-MODEL-AGG] No records found in {secondary_model}")
-            self.results_count = 0
-            self.result_ids = []
-            self.model_domain = "[]  # Multi-model: No records in secondary model"
+            query_type = query_spec.get('query_type')
+            _logger.warning(f"[STRUCTURED-EXEC] Executing query type: {query_type}")
+            
+            if query_type == 'count_aggregate':
+                self._execute_count_aggregate_from_spec(query_spec)
+            elif query_type == 'exclusion':
+                self._execute_exclusion_from_spec(query_spec)
+            else:
+                raise UserError(_(f'Unknown query type: {query_type}'))
+            
             self.status = 'success'
-            return
+            _logger.warning(f"[STRUCTURED-EXEC] Success: {self.results_count} results")
+            
+        except UserError:
+            raise
+        except Exception as e:
+            _logger.error(f"[STRUCTURED-EXEC ERROR] {str(e)}")
+            self.status = 'error'
+            self.error_message = str(e)
+            raise UserError(_(
+                'Structured query execution failed: %s\n\n'
+                'The AI may have generated invalid query parameters.\n'
+                'Try rephrasing your query.'
+            ) % str(e)[:100])
+    
+    def _execute_count_aggregate_from_spec(self, query_spec):
+        """
+        Execute count aggregation from structured spec.
         
-        # Group by the link field and count
-        counts = Counter()
-        processed_count = 0
-        empty_link_count = 0
-        error_count = 0
+        Finds records in primary_model that have >= N related records in secondary_model.
+        
+        Example:
+            query_spec = {
+              'primary_model': 'res.partner',
+              'secondary_model': 'account.move',
+              'link_field': 'partner_id',
+              'threshold': 10,
+              'comparison': '>='
+            }
+        """
+        primary_model_name = query_spec['primary_model']
+        secondary_model_name = query_spec['secondary_model']
+        link_field = query_spec['link_field']
+        threshold = query_spec.get('threshold', 1)
+        comparison = query_spec.get('comparison', '>=')
+        
+        _logger.warning(f"[STRUCTURED-AGG] Aggregating {secondary_model_name} by {link_field}")
+        _logger.warning(f"[STRUCTURED-AGG] Threshold: {comparison} {threshold}")
+        
+        PrimaryModel = self.env[primary_model_name]
+        SecondaryModel = self.env[secondary_model_name]
+        
+        # Count records per primary ID
+        secondary_records = SecondaryModel.search([])
+        counts = {}
         
         for record in secondary_records:
             try:
                 link_value = record[link_field]
                 if link_value:
-                    # For Many2one fields, get the ID
                     link_id = link_value.id if hasattr(link_value, 'id') else link_value
-                    counts[link_id] += 1
-                    processed_count += 1
-                else:
-                    empty_link_count += 1
-            except Exception as e:
-                _logger.warning(f"[MULTI-MODEL-AGG] Error accessing {link_field} on record {record.id}: {str(e)}")
-                error_count += 1
+                    counts[link_id] = counts.get(link_id, 0) + 1
+            except:
+                pass
         
-        _logger.warning(f"[MULTI-MODEL-AGG] Processed: {processed_count}, Empty links: {empty_link_count}, Errors: {error_count}")
-        _logger.warning(f"[MULTI-MODEL-AGG] Counts dict: {dict(counts)}")
-        
-        count_comparison = pattern_config.get('count_comparison', 'greater_than')
-        _logger.warning(f"[MULTI-MODEL-AGG] Using comparison: {count_comparison}")
-        
+        # Filter by comparison operator
         matching_ids = []
-        if count_comparison == 'greater_than':
-            matching_ids = [pk for pk, count in counts.items() if count > count_value]
-        elif count_comparison == 'greater_equal':
-            matching_ids = [pk for pk, count in counts.items() if count >= count_value]
-        elif count_comparison == 'equal':
-            matching_ids = [pk for pk, count in counts.items() if count == count_value]
+        for primary_id, count in counts.items():
+            if comparison == '>=':
+                if count >= threshold:
+                    matching_ids.append(primary_id)
+            elif comparison == '>':
+                if count > threshold:
+                    matching_ids.append(primary_id)
+            elif comparison == '<=':
+                if count <= threshold:
+                    matching_ids.append(primary_id)
+            elif comparison == '<':
+                if count < threshold:
+                    matching_ids.append(primary_id)
+            elif comparison == '=':
+                if count == threshold:
+                    matching_ids.append(primary_id)
         
-        _logger.warning(f"[MULTI-MODEL-AGG] Filtering {len(counts)} partners by threshold {count_comparison} {count_value}: {matching_ids}")
-        _logger.warning(f"[MULTI-MODEL-AGG] Found {len(matching_ids)} {primary_model_name}")
+        _logger.warning(f"[STRUCTURED-AGG] Found {len(matching_ids)} {primary_model_name} records")
         
-        # Search primary model records with matching IDs
+        # Search primary model with matched IDs
         if matching_ids:
-            domain = [('id', 'in', matching_ids)]
-            results = PrimaryModel.search(domain)
+            results = PrimaryModel.search([('id', 'in', matching_ids)])
         else:
             results = PrimaryModel.search([('id', '=', False)])  # Empty result
         
         self.results_count = len(results)
+        self.model_domain = f"[('id', 'in', {matching_ids})]  # Structured: count aggregation"
         
-        # Store results
         result_data = []
         for res in results:
             result_data.append((0, 0, {
@@ -420,52 +389,54 @@ class SearchQuery(models.Model):
                 'model': primary_model_name,
             }))
         self.result_ids = result_data
-        
-        # Store the domain for reference (it's a Python domain, not LLM generated)
-        self.model_domain = f"[('id', 'in', {matching_ids})]  # Multi-model aggregation"
-        self.status = 'success'
     
-    def _execute_exclusion(self, primary_model_name, secondary_model_name,
-                          pattern_config, PrimaryModel, SecondaryModel):
+    def _execute_exclusion_from_spec(self, query_spec):
         """
-        Execute exclusion: find primary model records NOT in secondary model.
+        Execute exclusion query from structured spec.
+        
+        Finds records in primary_model that have NO related records in secondary_model.
         
         Example: "Products never ordered"
-        1. Search all secondary model records
-        2. Extract unique primary model references
-        3. Return primary model records NOT in that list
+            query_spec = {
+              'primary_model': 'product.template',
+              'secondary_model': 'sale.order',
+              'link_field': 'product_id'
+            }
         """
-        aggregate_field = pattern_config['aggregate_field']
+        primary_model_name = query_spec['primary_model']
+        secondary_model_name = query_spec['secondary_model']
+        link_field = query_spec['link_field']
         
-        _logger.warning(f"[MULTI-MODEL-EXC] Finding {primary_model_name} NOT in {secondary_model_name}")
+        _logger.warning(f"[STRUCTURED-EXC] Finding {primary_model_name} NOT in {secondary_model_name}")
         
-        # Find all primary model IDs that appear in secondary model
+        PrimaryModel = self.env[primary_model_name]
         SecondaryModel = self.env[secondary_model_name]
-        secondary_records = SecondaryModel.search([])
         
+        # Find all primary IDs referenced in secondary model
+        secondary_records = SecondaryModel.search([])
         referenced_ids = set()
+        
         for record in secondary_records:
             try:
-                link_value = record[aggregate_field]
+                link_value = record[link_field]
                 if link_value:
                     link_id = link_value.id if hasattr(link_value, 'id') else link_value
                     referenced_ids.add(link_id)
             except:
                 pass
         
-        _logger.warning(f"[MULTI-MODEL-EXC] Found {len(referenced_ids)} referenced {primary_model_name} IDs")
+        _logger.warning(f"[STRUCTURED-EXC] Found {len(referenced_ids)} referenced IDs")
         
         # Search primary model NOT in referenced IDs
         if referenced_ids:
-            domain = [('id', 'not in', list(referenced_ids))]
+            results = PrimaryModel.search([('id', 'not in', list(referenced_ids))])
         else:
             # If nothing is referenced, return all active records
-            domain = [('active', '=', True)]
+            results = PrimaryModel.search([('active', '=', True)])
         
-        results = PrimaryModel.search(domain)
         self.results_count = len(results)
+        self.model_domain = f"[('id', 'not in', {list(referenced_ids)})]  # Structured: exclusion"
         
-        # Store results
         result_data = []
         for res in results:
             result_data.append((0, 0, {
@@ -474,28 +445,32 @@ class SearchQuery(models.Model):
                 'model': primary_model_name,
             }))
         self.result_ids = result_data
-        
-        self.model_domain = f"{domain}  # Multi-model exclusion"
-        self.status = 'success'
 
     def _parse_natural_language(self):
         """
-        Convert natural language query to Odoo domain using OpenAI GPT-4.
+        Convert natural language query to either Odoo domain or structured query format.
+        
+        Returns either:
+        - Simple domain: [('field', 'operator', 'value')]  (list)
+        - Structured query: {'query_type': 'count_aggregate', ...}  (dict)
         
         Process:
-        1. Retrieve OpenAI API key from Odoo configuration
-        2. Get all stored fields for the selected model
-        3. Build a detailed prompt with field information and examples
-        4. Send prompt to GPT-4 API with system message about domain generation
-        5. Parse the response to extract the domain list
-        6. Validate the domain against the model's fields
-        7. Return the parsed domain for database search
+        1. Retrieve OpenAI API key
+        2. Build prompt with field info AND examples of structured queries
+        3. Send to GPT-4
+        4. Try to parse response as JSON first (structured query)
+        5. If JSON fails, parse as domain list (simple query)
+        6. Return either dict or list depending on what was recognized
+        
+        The LLM intelligently decides:
+        - Simple filter? → Return domain list
+        - Needs COUNT/JOIN? → Return JSON with query_type and metadata
         
         Returns:
-            list: Odoo domain (list of tuples) to be used in Model.search()
+            dict or list: Structured query dict OR Odoo domain list
             
         Raises:
-            UserError: If API key missing, model not installed, parsing fails, etc.
+            UserError: If API key missing, parsing fails, etc.
         """
         api_key = self.env['ir.config_parameter'].sudo().get_param('ovunque.openai_api_key')
         
@@ -542,7 +517,13 @@ class SearchQuery(models.Model):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are an Odoo domain filter generator. Convert natural language queries to Odoo domain syntax (Python list of tuples). Respond ONLY with valid Python list syntax. No explanations."
+                        "content": (
+                            "You are an intelligent Odoo query generator. "
+                            "For SIMPLE queries, respond with Python domain syntax: [('field', 'op', 'value')] "
+                            "For COMPLEX queries (aggregation, counting, exclusion), respond with JSON metadata: "
+                            '{"query_type": "count_aggregate", "primary_model": "...", ...} '
+                            "Respond ONLY with the domain list or JSON. No explanations, no markdown."
+                        )
                     },
                     {
                         "role": "user",
@@ -550,15 +531,16 @@ class SearchQuery(models.Model):
                     }
                 ],
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=1000
             )
             
             response_text = response.choices[0].message.content.strip()
             self.raw_response = response_text
             _logger.warning(f"[LLM] Response received: {response_text[:300]}")
             
-            domain = self._parse_domain_response(response_text)
-            return domain
+            # Try to parse as JSON first (structured query)
+            query_response = self._parse_query_response(response_text)
+            return query_response
             
         except UserError:
             raise
@@ -574,6 +556,46 @@ class SearchQuery(models.Model):
                 raise UserError(_('You have exceeded OpenAI API rate limits. Please wait a few minutes and try again.'))
             else:
                 raise UserError(_('Error communicating with OpenAI: %s\n\nPlease check Settings → Ovunque → API Settings.') % str(e)[:100])
+    
+    def _parse_query_response(self, response_text):
+        """
+        Parse LLM response as either JSON (structured query) or domain (simple query).
+        
+        Intelligently detects which format the LLM returned:
+        1. Try JSON parsing first (structured query with query_type)
+        2. If JSON fails, try domain parsing (list of tuples)
+        3. Return either dict or list
+        
+        Args:
+            response_text (str): Raw response from LLM
+            
+        Returns:
+            dict: Structured query if JSON is valid and has query_type
+            list: Odoo domain if response is a valid Python list
+            
+        Log prefixes:
+        - [PARSE-JSON] - JSON parsing phase
+        - [PARSE-DOMAIN] - Domain parsing phase (fallback)
+        """
+        response_text = response_text.strip()
+        
+        # First attempt: try JSON parsing
+        _logger.warning(f"[PARSE-JSON] Attempting JSON parse: {response_text[:200]}")
+        try:
+            data = json.loads(response_text)
+            if isinstance(data, dict) and 'query_type' in data:
+                _logger.warning(f"[PARSE-JSON] ✓ Parsed as structured query: type={data.get('query_type')}")
+                return data
+            else:
+                _logger.warning(f"[PARSE-JSON] JSON is valid but not structured query (no query_type)")
+        except json.JSONDecodeError as e:
+            _logger.warning(f"[PARSE-JSON] JSON parsing failed: {str(e)[:100]}")
+        
+        # Second attempt: try domain parsing
+        _logger.warning(f"[PARSE-DOMAIN] Parsing as Odoo domain")
+        domain = self._parse_domain_response(response_text)
+        _logger.warning(f"[PARSE-DOMAIN] Parsed domain: {domain}")
+        return domain
 
     def _build_prompt(self, model_fields):
         """
@@ -596,42 +618,76 @@ class SearchQuery(models.Model):
         fields_info = self._get_field_info(model_fields)
         model_examples = self._get_model_examples()
         
-        prompt = f"""TASK: Convert natural language query to Odoo domain (Python list of tuples).
-RESPOND WITH ONLY THE DOMAIN LIST. NO EXPLANATIONS, NO MARKDOWN.
+        prompt = f"""TASK: Convert natural language query to Odoo query (domain or structured format).
+
+===== DECISION TREE =====
+1. Is this a SIMPLE filter? (e.g., "active invoices", "clients from Milan")
+   → Respond with Python domain list: [('field', 'operator', 'value')]
+
+2. Is this a COMPLEX query? (requires counting, aggregation, or exclusion)
+   Examples: "Clients with 10+ invoices", "Products never ordered"
+   → Respond with JSON metadata:
+   {{"query_type": "count_aggregate", "primary_model": "res.partner", ...}}
 
 ===== MODEL INFORMATION =====
 Model: {self.model_name}
 Description: {self._get_model_description()}
 
-===== AVAILABLE FIELDS (DATABASE STORED ONLY - USE ONLY THESE) =====
+===== AVAILABLE FIELDS (DATABASE STORED ONLY) =====
 {fields_info}
 
 ===== FIELD EXAMPLES FOR THIS MODEL =====
 {model_examples}
 
-===== RULES (CRITICAL - YOU MUST FOLLOW) =====
-1. RESPOND WITH ONLY A PYTHON LIST: [(...), (...)]
-2. EVERY field name must EXACTLY match one from the list above
-3. Do NOT invent field names, do NOT use variations
-4. Do NOT use computed fields (they are NOT in the list)
-5. Operators: '=', '!=', '>', '<', '>=', '<=', 'ilike', 'like', 'in', 'not in'
-6. Dates: YYYY-MM-DD format, e.g. '2025-01-15'
-7. Numbers: plain integers/floats, NO currency symbols (100, not 100€)
-8. Booleans: True/False (no quotes)
-9. Many2one: use ('field.name', 'operator', 'text') OR ('field_id', '=', number)
-10. SPECIAL: For product models, see the specific field mapping rules above (especially price fields)
-11. IF you cannot safely create a domain → respond with: []
+===== SIMPLE DOMAIN RULES =====
+1. Respond with ONLY: [(...), (...)]
+2. Field names must EXACTLY match the list above
+3. Operators: '=', '!=', '>', '<', '>=', '<=', 'ilike', 'like', 'in', 'not in'
+4. Dates: YYYY-MM-DD format
+5. Numbers: plain integers/floats (100, not 100€)
+6. Booleans: True/False (no quotes)
 
-===== VALID RESPONSE EXAMPLES =====
+===== STRUCTURED QUERY RULES (Complex queries) =====
+Respond with JSON when query needs multi-model logic:
+
+PATTERN 1 - COUNT AGGREGATION: "Clients with 10+ invoices"
+{{
+  "query_type": "count_aggregate",
+  "primary_model": "res.partner",
+  "secondary_model": "account.move",
+  "link_field": "partner_id",
+  "threshold": 10,
+  "comparison": ">="
+}}
+
+PATTERN 2 - EXCLUSION: "Products never ordered"
+{{
+  "query_type": "exclusion",
+  "primary_model": "product.template",
+  "secondary_model": "sale.order",
+  "link_field": "product_id"
+}}
+
+===== RESPONSE EXAMPLES =====
+
+SIMPLE DOMAIN QUERIES:
 [('state', '=', 'confirmed')]
 [('name', 'ilike', 'test'), ('active', '=', True)]
-[('date_start', '>=', '2025-01-01')]
-[('price_total', '>', 1000)]
+[('amount_total', '>', 1000)]
 []
+
+STRUCTURED QUERIES:
+{{"query_type": "count_aggregate", "primary_model": "res.partner", "secondary_model": "account.move", "link_field": "partner_id", "threshold": 3, "comparison": ">="}}
+{{"query_type": "exclusion", "primary_model": "product.template", "secondary_model": "sale.order", "link_field": "product_id"}}
 
 ===== YOUR TASK =====
 Query: "{self.name}"
-Response (ONLY the list, nothing else):"""
+
+Analyze: Does this query need multi-model logic (counting, aggregation)?
+- YES → Respond ONLY with JSON (structured query)
+- NO → Respond ONLY with domain list [(...)]
+
+Response:"""
         return prompt
 
     def _get_field_info(self, model_fields):

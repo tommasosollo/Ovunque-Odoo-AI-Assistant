@@ -11,6 +11,8 @@
                     <field name="model_name"/>
                     <field name="status" widget="badge"/>
                     <field name="results_count"/>
+                    <field name="is_multi_model" widget="boolean"/>
+                    <field name="used_sql_fallback" widget="boolean"/>
                     <field name="created_by_user"/>
                 </list>
             </field>
@@ -51,8 +53,20 @@
                             </page>
                             <page string="Debug Info">
                                 <group>
-                                    <field name="model_domain" widget="text" readonly="True"/>
-                                    <field name="raw_response" widget="text" readonly="True"/>
+                                    <field name="query_type" readonly="True"/>
+                                    <field name="is_multi_model" readonly="True"/>
+                                </group>
+                                <group col="12">
+                                    <label for="model_domain" string="Odoo Domain / Structured Spec"/>
+                                    <field name="model_domain" widget="text" readonly="True" nolabel="1"/>
+                                </group>
+                                <group col="12">
+                                    <label for="query_spec" string="Query Specification (JSON)"/>
+                                    <field name="query_spec" widget="text" readonly="True" nolabel="1"/>
+                                </group>
+                                <group col="12">
+                                    <label for="raw_response" string="Raw LLM Response"/>
+                                    <field name="raw_response" widget="text" readonly="True" nolabel="1"/>
                                 </group>
                             </page>
                         </notebook>
@@ -72,6 +86,8 @@
                     <field name="created_by_user"/>
                     <filter name="filter_success" string="Successful" domain="[('status', '=', 'success')]"/>
                     <filter name="filter_error" string="Failed" domain="[('status', '=', 'error')]"/>
+                    <filter name="filter_multi_model" string="Multi-Model" domain="[('is_multi_model', '=', True)]"/>
+                    <filter name="filter_sql_fallback" string="SQL Fallback" domain="[('used_sql_fallback', '=', True)]"/>
                 </search>
             </field>
         </record>
